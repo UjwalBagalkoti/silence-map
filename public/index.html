@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Silence Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <div>
+        <h1>Silence Map</h1>
+        <p>The quietest, least-documented places nearby</p>
+      </div>
+    </div>
+    <form id="searchForm" class="search-form">
+      <input id="searchInput" type="text" placeholder="Search a city or place…" autocomplete="off" />
+      <button type="submit">Search</button>
+      <button type="button" id="locateBtn">Use my location</button>
+    </form>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Quietest spots</h2>
+        <span id="resultCount" class="tag">—</span>
+      </div>
+      <p class="legend">Score reflects how little is recorded about a place on OpenStreetMap — no website, hours, or category detail. High score = practically undocumented.</p>
+      <div id="placeList" class="place-list">
+        <p class="empty-state">Loading a default view…</p>
+      </div>
+    </aside>
+    <div id="map"></div>
+  </main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
