@@ -10,6 +10,9 @@ Every map app shows you what's popular: top-rated, most-reviewed, most-photograp
 
 It's a small experiment in treating missing data as meaningful rather than as a gap to fill.
 
+## Demo
+https://silence-map.vercel.app/
+
 ## How it works
 
 - **Backend** (Node + Express) exposes two endpoints:
@@ -24,7 +27,7 @@ It's a small experiment in treating missing data as meaningful rather than as a 
 Requires Node.js 18 or later (for built-in `fetch`).
 
 ```bash
-git clone https://github.com/<your-username>/silence-map.git
+git clone https://github.com/UjwalBagalkoti/silence-map.git
 cd silence-map
 npm install
 cp .env.example .env
@@ -65,7 +68,3 @@ silence-map/
 - Node.js + Express
 - [Leaflet](https://leafletjs.com/) for the map
 - [OpenStreetMap](https://www.openstreetmap.org/), [Nominatim](https://nominatim.org/), and [Overpass API](https://overpass-api.de/) for all data
-
-## License
-
-MIT — see [LICENSE](LICENSE).
