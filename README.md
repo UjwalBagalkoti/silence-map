@@ -10,7 +10,7 @@ Every map app shows you what's popular: top-rated, most-reviewed, most-photograp
 
 It's a small experiment in treating missing data as meaningful rather than as a gap to fill.
 
-## Demo
+## Live Project
 https://silence-map.vercel.app/
 
 ## How it works
