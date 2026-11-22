@@ -301,10 +301,6 @@ body.nature .intro button{background:var(--nature-bg);border-color:var(--nature-
   background:var(--legend-bg);border:1px solid var(--line);border-radius:10px;padding:8px 10px;
   font-family:var(--font-mono);font-size:10px;color:var(--text-secondary);width:150px;
 }
-.map-legend .bar{height:6px;border-radius:99px;margin:5px 0 3px;background:linear-gradient(90deg, rgb(60,60,68), rgb(145,102,218));}
-body.nature .map-legend .bar{background:linear-gradient(90deg, rgb(60,68,64), rgb(70,200,120));}
-.map-legend .row{display:flex;justify-content:space-between;gap:6px;}
-.empty-state .secondary{margin-left:8px;}
 
 /* ---------------------------------------------------- theme, hours, share */
 .icon-toggle{

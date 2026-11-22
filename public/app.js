@@ -14,7 +14,6 @@ const state = {
   sort: 'quiet',
   places: [],
   placesMode: 'quiet',   // mode the current places were loaded for
-  noteShown: false,
   view: 'results',       // 'results' or 'saved'
   selectedId: null,
   pendingPlace: null,    // place id from a shared link, opened once results load
