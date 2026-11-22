@@ -715,7 +715,7 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
   try {
     const mode = state.mode;
     const types = mode === 'nature' ? state.natureTypes : state.types;
-    const qs = new URLSearchParams({ lat, lon, radius: state.radius, mode, types: [...types].join(',') });
+    const qs = new URLSearchParams({ lat: (+lat).toFixed(3), lon: (+lon).toFixed(3), radius: state.radius, mode, types: [...types].join(',') });
     const ckey = `silence-map:res:${mode}|${(+lat).toFixed(3)}|${(+lon).toFixed(3)}|${state.radius}|${[...types].join(',')}`;
     // Show the last results for this spot instantly, then refresh them in the background.
     const earlier = safeStorage('get', ckey);
