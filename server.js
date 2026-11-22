@@ -15,6 +15,9 @@ const OVERPASS_HEDGE_MS = 3000;   // start the next mirror if the current one is
 const OVERPASS_ATTEMPT_MS = 14000;
 const ALL_GROUPS = ['amenity', 'shop', 'tourism', 'leisure'];
 const MAX_RESULTS = 60;
+const MAX_RADIUS = 300000;      // 300 km
+const WIDE_RADIUS = 10000;      // beyond this only notable places are searched, to keep the query fast
+const WIDE_ATTEMPT_MS = 40000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 const GEOCODE_TTL_MS = 60 * 60 * 1000;
 
@@ -218,7 +221,7 @@ app.get('/api/geocode', async (req, res) => {
  * rate-limited or slow on any single mirror, so if the first has not answered
  * after a few seconds the next one is started too, and the first success wins.
  */
-function overpass(query) {
+function overpass(query, attemptMs = OVERPASS_ATTEMPT_MS) {
   return new Promise((resolve, reject) => {
     const controllers = [];
     let hedgeTimer = null;
@@ -242,7 +245,7 @@ function overpass(query) {
       const endpoint = OVERPASS_ENDPOINTS[nextIdx++];
       const ctrl = new AbortController();
       controllers.push(ctrl);
-      const timeout = setTimeout(() => ctrl.abort(), OVERPASS_ATTEMPT_MS);
+      const timeout = setTimeout(() => ctrl.abort(), attemptMs);
       running += 1;
       fetch(endpoint, {
         method: 'POST',
@@ -373,15 +376,28 @@ function calmScore(peace, naturalness, hidden) {
   return Math.round(0.55 * peace + 0.30 * naturalness + 0.15 * hidden);
 }
 
+const NATURE_WIDE = {
+  green: [['leisure', 'park|garden', '[wikidata]']],
+  wild: [['leisure', 'nature_reserve', ''], ['boundary', 'national_park|protected_area', '']],
+  water: [['natural', 'beach|spring', ''], ['natural', 'water', '[wikidata]']],
+  view: [['tourism', 'viewpoint', ''], ['natural', 'peak', '[wikidata]']]
+};
+
 async function natureMap(lat, lon, radius, groups) {
-  const clauses = groups.flatMap(g => NATURE_CLAUSES[g].map(([k, v]) => `nwr["name"]["${k}"~"^(${v})$"](around:${radius},${lat},${lon});`));
-  const natureQuery = `[out:json][timeout:25];(${clauses.join('')});out center tags 500;`;
+  const wide = radius > WIDE_RADIUS;
+  const clauses = wide
+    ? groups.flatMap(g => NATURE_WIDE[g].map(([k, v, extra]) => `nwr["name"]["${k}"~"^(${v})$"]${extra}(around:${radius},${lat},${lon});`))
+    : groups.flatMap(g => NATURE_CLAUSES[g].map(([k, v]) => `nwr["name"]["${k}"~"^(${v})$"](around:${radius},${lat},${lon});`));
+  const natureQuery = `[out:json][timeout:${wide ? 45 : 25}];(${clauses.join('')});out center tags ${wide ? 1500 : 500};`;
   const noiseQuery = `[out:json][timeout:25];(
     way["highway"~"^(motorway|trunk|primary|secondary)$"](around:${radius + NOISE_MAX_REACH},${lat},${lon});
     way["railway"="rail"](around:${radius + NOISE_MAX_REACH},${lat},${lon});
   );out body geom 8000;`;
 
-  const [natureRes, noiseRes] = await Promise.allSettled([overpass(natureQuery), overpass(noiseQuery)]);
+  const [natureRes, noiseRes] = await Promise.allSettled([
+    overpass(natureQuery, wide ? WIDE_ATTEMPT_MS : undefined),
+    wide ? Promise.reject(new Error('road noise is not checked for wide searches')) : overpass(noiseQuery)
+  ]);
   if (natureRes.status === 'rejected') throw natureRes.reason;
 
   const noiseOk = noiseRes.status === 'fulfilled';
@@ -425,6 +441,7 @@ async function natureMap(lat, lon, radius, groups) {
   }
 
   places.sort((a, b) => b.calm_score - a.calm_score || b.naturalness - a.naturalness);
+  if (wide) places.forEach(p => { p.noise_level = 'Road noise not checked'; });
   return {
     places: places.slice(0, MAX_RESULTS),
     noiseAvailable: noiseOk,
@@ -447,7 +464,7 @@ app.get('/api/silence-map', async (req, res) => {
   if (Number.isNaN(lat) || Number.isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
     return res.status(400).json({ error: 'Query parameters "lat" and "lon" must be valid coordinates.' });
   }
-  const radius = Math.max(200, Math.min(parseInt(req.query.radius, 10) || 2000, 5000));
+  const radius = Math.max(200, Math.min(parseInt(req.query.radius, 10) || 2000, MAX_RADIUS));
   const mode = req.query.mode === 'nature' ? 'nature' : 'quiet';
 
   const allowed = mode === 'nature' ? NATURE_GROUPS : ALL_GROUPS;
@@ -470,14 +487,26 @@ app.get('/api/silence-map', async (req, res) => {
       places = r.places;
       meta = { noise_available: r.noiseAvailable, noise_partial: r.noisePartial };
     } else {
+      const wide = radius > WIDE_RADIUS;
+      // Wide searches only look at notable quiet-type places, otherwise the query would never finish.
+      const WIDE_QUIET = {
+        amenity: '["amenity"~"^(place_of_worship|library|cafe)$"]["wikidata"]',
+        shop: null,
+        tourism: '["tourism"~"^(attraction|viewpoint|museum|gallery|artwork)$"]',
+        leisure: '["leisure"~"^(park|garden|nature_reserve)$"]'
+      };
+      const clauses = wide
+        ? groups.map(g => WIDE_QUIET[g]).filter(Boolean).map(f => `nwr["name"]${f}(around:${radius},${lat},${lon});`)
+        : groups.map(g => `nwr["name"]["${g}"](around:${radius},${lat},${lon});`);
+      if (!clauses.length) return res.json({ mode, count: 0, radius, center: { lat, lon }, cached: false, places: [] });
       const query = `
-        [out:json][timeout:25];
+        [out:json][timeout:${wide ? 45 : 25}];
         (
-          ${groups.map(g => `nwr["name"]["${g}"](around:${radius},${lat},${lon});`).join('\n          ')}
+          ${clauses.join('\n          ')}
         );
-        out center tags 500;
+        out center tags ${wide ? 1500 : 500};
       `;
-      const data = await overpass(query);
+      const data = await overpass(query, wide ? WIDE_ATTEMPT_MS : undefined);
       const seen = new Set();
       places = [];
       for (const el of data.elements || []) {

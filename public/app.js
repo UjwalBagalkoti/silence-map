@@ -337,6 +337,14 @@ function updateMapLegend() {
 }
 
 /** Highlight the selected place on both the map and the list. */
+/** Reveal a marker (expanding its cluster if needed), then run cb. Safe if the marker was removed meanwhile. */
+function revealMarker(m, cb) {
+  try {
+    if (!markersLayer.hasLayer(m)) return;
+    if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(m, cb); else cb();
+  } catch (_) { try { cb(); } catch (__) {} }
+}
+
 function setSelected(id) {
   if (state.selectedId && state.markers.has(state.selectedId)) {
     const el0 = state.markers.get(state.selectedId).getElement();
@@ -347,7 +355,7 @@ function setSelected(id) {
   if (id && state.markers.has(id)) {
     const m = state.markers.get(id);
     const apply = () => { const e = m.getElement(); if (e) e.classList.add('pin-selected'); };
-    if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(m, apply); else apply();
+    revealMarker(m, apply);
     m.setZIndexOffset(1000);
     const card = document.querySelector(`.place-card[data-id="${CSS.escape(id)}"]`);
     if (card) card.classList.add('active');
@@ -369,7 +377,7 @@ function flyTo(lat, lon, zoom) {
 }
 
 function zoomForRadius(r) {
-  return r <= 500 ? 16 : r <= 1000 ? 15 : r <= 2000 ? 14 : 13;
+  return r <= 500 ? 16 : r <= 1000 ? 15 : r <= 2000 ? 14 : r <= 5000 ? 13 : r <= 10000 ? 12 : r <= 25000 ? 11 : r <= 50000 ? 10 : r <= 100000 ? 9 : r <= 200000 ? 8 : 7;
 }
 
 /* -------------------------------------------------------------- user GPS */
@@ -535,7 +543,7 @@ function popupFor(p) {
 }
 
 function widenOptions() {
-  const radii = [500, 1000, 2000, 5000];
+  const radii = [500, 1000, 2000, 5000, 10000, 25000, 50000, 100000, 200000, 300000];
   const next = radii.find(r => r > state.radius);
   return next;
 }
@@ -589,7 +597,7 @@ function renderPlaces() {
     const open = () => {
       setSelected(p.id);
       flyTo(p.lat, p.lon, 17);
-      setTimeout(() => { if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(marker, () => marker.openPopup()); else marker.openPopup(); }, 300);
+      setTimeout(() => { revealMarker(marker, () => marker.openPopup()); }, 300);
       if (window.matchMedia('(max-width: 820px)').matches) $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
     };
     marker.on('click', () => {
@@ -648,7 +656,7 @@ function openQuietest() {
   setTimeout(() => {
     if (state.selectedId) return;
     setSelected(top.id);
-    if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(m, () => m.openPopup()); else m.openPopup();
+    revealMarker(m, () => m.openPopup());
   }, 500);
 }
 
@@ -673,7 +681,7 @@ function openPendingPlace() {
   if (!marker || !place) { toast('That shared place is not in the results any more, so the surrounding area is shown.', 6000); return; }
   setSelected(id);
   jumpTo(place.lat, place.lon, 17);
-  if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(marker, () => marker.openPopup()); else marker.openPopup();
+  revealMarker(marker, () => marker.openPopup());
   const card = document.querySelector(`.place-card[data-id="${CSS.escape(id)}"]`);
   if (card) card.scrollIntoView({ block: 'nearest' });
 }
@@ -699,6 +707,7 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
   els.area.textContent = `${state.label || 'Selected area'} · within ${formatDistance(state.radius)}`;
   if (!keepView) jumpTo(lat, lon, zoomForRadius(state.radius));
   showSkeleton();
+  if (state.radius > 10000) toast('Wide search: showing notable quiet places only. This can take up to a minute.', 8000);
   els.count.textContent = '…';
   safeStorage('set', 'silence-map:last', { lat, lon, label: state.label });
   updateUrl();
@@ -735,7 +744,8 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
     renderPlaces();
     if (data.stale) toast('Showing earlier results because the free map servers are busy right now.', 6000);
     else if (state.placesMode === 'nature') {
-      if (data.noise_available === false) toast('Could not check road noise right now, so calm scores are rough estimates.', 6000);
+      if (state.radius > 10000) { /* noise is not checked for wide searches */ }
+      else if (data.noise_available === false) toast('Could not check road noise right now, so calm scores are rough estimates.', 6000);
       else if (data.noise_partial) toast('This area is very busy, so the noise estimate may be incomplete. Try a smaller radius.', 6000);
     }
     openPendingPlace();
@@ -968,7 +978,7 @@ async function start() {
   // 1) a shared link, 2) your last search, 3) your location if already allowed, 4) the default city.
   const params = new URLSearchParams(location.search);
   const qLat = parseFloat(params.get('lat')), qLon = parseFloat(params.get('lon')), qR = parseInt(params.get('r'), 10);
-  if ([500, 1000, 2000, 5000].includes(qR)) { state.radius = qR; els.radius.value = String(qR); }
+  if ([500, 1000, 2000, 5000, 10000, 25000, 50000, 100000, 200000, 300000].includes(qR)) { state.radius = qR; els.radius.value = String(qR); }
   if (params.get('mode') === 'nature') { state.mode = 'nature'; applyMode(); }
   const sharedPlace = params.get('place');
   if (sharedPlace && /^(node|way|relation)\/\d+$/.test(sharedPlace)) state.pendingPlace = sharedPlace;
