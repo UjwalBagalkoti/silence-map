@@ -8,9 +8,13 @@ const state = {
   center: null,          // {lat, lon} of the last search
   label: '',             // human label for the search area
   radius: 2000,
+  mode: 'quiet',         // 'quiet' (hidden places) or 'nature' (calm green spaces)
   types: new Set(['amenity', 'shop', 'tourism', 'leisure']),
+  natureTypes: new Set(['green', 'wild', 'water', 'view']),
   sort: 'quiet',
   places: [],
+  placesMode: 'quiet',   // mode the current places were loaded for
+  noteShown: false,
   markers: new Map(),    // place id -> Leaflet marker
   user: null,            // {lat, lon, accuracy}
   watchId: null,
@@ -23,6 +27,8 @@ const $ = id => document.getElementById(id);
 const els = {
   list: $('placeList'), count: $('resultCount'), area: $('areaLabel'),
   radius: $('radiusSelect'), sort: $('sortSelect'), chips: $('typeChips'),
+  modes: document.querySelector('.modes'), natureChips: $('natureChips'), modeTitle: $('modeTitle'),
+  legendLow: $('legendLow'), legendHigh: $('legendHigh'), legendText: $('legendText'), sortBestOpt: $('sortBestOpt'),
   locate: $('locateBtn'), follow: $('followBtn'), searchArea: $('searchAreaBtn'),
   form: $('searchForm'), input: $('searchInput'), sugg: $('suggestions'), toast: $('toast')
 };
@@ -64,12 +70,26 @@ function formatDistance(m) {
 }
 
 function scoreColor(score) {
-  // 0 = well documented (muted gray), 100 = practically undocumented (bright violet)
   const t = score / 100;
+  if (state.placesMode === 'nature') {
+    // 0 = busy (muted gray), 100 = very calm and natural (green)
+    return `rgb(${Math.round(60 + t * 10)},${Math.round(68 + t * 132)},${Math.round(64 + t * 56)})`;
+  }
+  // 0 = well documented (muted gray), 100 = practically undocumented (bright violet)
   return `rgb(${Math.round(60 + t * 85)},${Math.round(60 + t * 42)},${Math.round(68 + t * 150)})`;
 }
 
+function scoreOf(p) {
+  return state.placesMode === 'nature' ? p.calm_score : p.silence_score;
+}
+
 function scoreLabel(score) {
+  if (state.placesMode === 'nature') {
+    if (score >= 80) return 'Very calm';
+    if (score >= 65) return 'Calm';
+    if (score >= 50) return 'Fairly calm';
+    return 'Busy surroundings';
+  }
   if (score >= 80) return 'Almost invisible';
   if (score >= 60) return 'Very quiet';
   if (score >= 40) return 'Quiet';
@@ -226,7 +246,7 @@ function distanceOf(p) {
 function sortedPlaces() {
   const arr = state.places.map(p => ({ ...p, _d: distanceOf(p) }));
   if (state.sort === 'near') arr.sort((a, b) => a._d - b._d);
-  else arr.sort((a, b) => b.silence_score - a.silence_score || a.tag_count - b.tag_count);
+  else arr.sort((a, b) => scoreOf(b) - scoreOf(a) || a.tag_count - b.tag_count);
   return arr;
 }
 
@@ -234,7 +254,9 @@ function popupFor(p) {
   return el('div', {},
     el('div', { class: 'pop-title', text: p.name }),
     el('div', { class: 'pop-meta' }, el('span', { class: 'cat', text: p.category }), ` · ${formatDistance(p._d)} away`),
-    el('div', { text: `Silence score ${p.silence_score} (${scoreLabel(p.silence_score).toLowerCase()})` }),
+    state.placesMode === 'nature'
+      ? el('div', { text: `Calm score ${p.calm_score} · ${p.noise_level}` })
+      : el('div', { text: `Silence score ${p.silence_score} (${scoreLabel(p.silence_score).toLowerCase()})` }),
     el('a', { href: directionsUrl(p), target: '_blank', rel: 'noopener noreferrer', text: 'Walking directions ↗' })
   );
 }
@@ -246,14 +268,18 @@ function renderPlaces() {
   els.count.textContent = `${places.length} found`;
 
   if (!places.length) {
-    showMessage('Nothing unusually quiet turned up here. Try a wider radius, more place types, or a different spot.');
+    showMessage(state.placesMode === 'nature'
+      ? 'No named parks, forests or water found here. Try a wider radius, more nature types, or a different spot.'
+      : 'Nothing unusually quiet turned up here. Try a wider radius, more place types, or a different spot.');
     return;
   }
 
   const cards = places.map(p => {
-    const color = scoreColor(p.silence_score);
+    const score = scoreOf(p);
+    const color = scoreColor(score);
+    const nature = state.placesMode === 'nature';
     const marker = L.circleMarker([p.lat, p.lon], {
-      radius: 6 + p.silence_score / 12, fillColor: color, fillOpacity: 0.85, color, weight: 1
+      radius: 6 + score / 12, fillColor: color, fillOpacity: 0.85, color, weight: 1
     }).bindPopup(() => popupFor(p));
     marker.addTo(markersLayer);
     state.markers.set(p.id, marker);
@@ -271,17 +297,21 @@ function renderPlaces() {
       card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     });
 
-    const why = p.missing.length ? `Not recorded: ${p.missing.slice(0, 4).join(', ')}` : 'Fairly well documented';
-    const card = el('div', { class: 'place-card', role: 'button', tabindex: '0', 'aria-label': `${p.name}, silence score ${p.silence_score}. Show on map.` },
+    const why = nature
+      ? (p.silence_score >= 80 ? 'Few details online, so it may be a hidden gem.' : 'Well known and documented.')
+      : (p.missing.length ? `Not recorded: ${p.missing.slice(0, 4).join(', ')}` : 'Fairly well documented');
+    const noiseClass = p.noise == null ? 'unknown' : p.noise < 15 ? 'peaceful' : p.noise < 40 ? 'some' : 'busy';
+    const card = el('div', { class: 'place-card', role: 'button', tabindex: '0', 'aria-label': `${p.name}, ${nature ? 'calm' : 'silence'} score ${score}. Show on map.` },
       el('div', { class: 'place-card-top' },
         el('span', { class: 'place-name', text: p.name }),
-        el('span', { class: 'place-score', style: `color:${color}`, text: String(p.silence_score) })),
+        el('span', { class: 'place-score', style: `color:${color}`, text: String(score) })),
       el('div', { class: 'place-meta' }, el('span', { class: 'cat', text: p.category }), ` · ${formatDistance(p._d)} away`),
       el('div', { class: 'place-why', text: why }),
       el('div', { class: 'place-actions' },
         el('a', { href: directionsUrl(p), target: '_blank', rel: 'noopener noreferrer', text: 'Directions ↗',
                   onclick: e => e.stopPropagation(), onkeydown: e => e.stopPropagation() }),
-        el('span', { class: 'badge', text: scoreLabel(p.silence_score) }))
+        nature ? el('span', { class: `noise ${noiseClass}`, text: p.noise_level }) : null,
+        el('span', { class: 'badge', text: scoreLabel(score) }))
     );
     card.addEventListener('click', open);
     card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
@@ -298,6 +328,7 @@ function updateUrl() {
     u.searchParams.set('lat', state.center.lat.toFixed(5));
     u.searchParams.set('lon', state.center.lon.toFixed(5));
     u.searchParams.set('r', String(state.radius));
+    u.searchParams.set('mode', state.mode);
     history.replaceState(null, '', u);
   } catch (_) { /* ignore */ }
 }
@@ -315,13 +346,20 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
   updateUrl();
 
   try {
-    const qs = new URLSearchParams({ lat, lon, radius: state.radius, types: [...state.types].join(',') });
+    const mode = state.mode;
+    const types = mode === 'nature' ? state.natureTypes : state.types;
+    const qs = new URLSearchParams({ lat, lon, radius: state.radius, mode, types: [...types].join(',') });
     const res = await fetch(`/api/silence-map?${qs}`);
     const data = await res.json().catch(() => ({}));
     if (seq !== state.loadSeq) return; // a newer search replaced this one
     if (!res.ok) throw new Error(data.error || 'The server could not process that location.');
     state.places = data.places;
+    state.placesMode = data.mode || mode;
     renderPlaces();
+    if (state.placesMode === 'nature') {
+      if (data.noise_available === false) toast('Could not check road noise right now, so calm scores are rough estimates.', 6000);
+      else if (data.noise_partial) toast('This area is very busy, so the noise estimate may be incomplete. Try a smaller radius.', 6000);
+    }
   } catch (err) {
     if (seq !== state.loadSeq) return;
     els.count.textContent = '—';
@@ -421,16 +459,48 @@ function reloadSoon() {
 
 els.radius.addEventListener('change', () => { state.radius = parseInt(els.radius.value, 10); reloadSoon(); });
 els.sort.addEventListener('change', () => { state.sort = els.sort.value; renderPlaces(); });
-els.chips.addEventListener('click', e => {
-  const chip = e.target.closest('.chip');
-  if (!chip) return;
-  const type = chip.dataset.type;
-  if (state.types.has(type)) {
-    if (state.types.size === 1) { toast('Keep at least one place type selected.'); return; }
-    state.types.delete(type);
-  } else state.types.add(type);
-  chip.classList.toggle('on', state.types.has(type));
-  chip.setAttribute('aria-pressed', String(state.types.has(type)));
+function wireChips(container, set) {
+  container.addEventListener('click', e => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    const type = chip.dataset.type;
+    if (set.has(type)) {
+      if (set.size === 1) { toast('Keep at least one place type selected.'); return; }
+      set.delete(type);
+    } else set.add(type);
+    chip.classList.toggle('on', set.has(type));
+    chip.setAttribute('aria-pressed', String(set.has(type)));
+    reloadSoon();
+  });
+}
+wireChips(els.chips, state.types);
+wireChips(els.natureChips, state.natureTypes);
+
+function applyMode() {
+  const nature = state.mode === 'nature';
+  document.body.classList.toggle('nature', nature);
+  els.modes.querySelectorAll('.mode').forEach(b => {
+    const on = b.dataset.mode === state.mode;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  els.chips.hidden = nature;
+  els.natureChips.hidden = !nature;
+  els.modeTitle.textContent = nature ? 'Calm nature spots' : 'Quietest spots';
+  els.sortBestOpt.textContent = nature ? 'Calmest first' : 'Quietest first';
+  els.legendLow.textContent = nature ? 'Busy surroundings' : 'Well documented';
+  els.legendHigh.textContent = nature ? 'Very calm & natural' : 'Almost invisible';
+  els.legendText.textContent = nature
+    ? 'Calm score combines how far a park, forest or lake is from busy roads and railways (an estimate from map data), how natural it is, and a small bonus if little is recorded about it. Higher means a more peaceful, greener spot.'
+    : 'The score shows how little is recorded about a place on OpenStreetMap — no website, hours or phone. Higher means quieter.';
+}
+
+els.modes.addEventListener('click', e => {
+  const btn = e.target.closest('.mode');
+  if (!btn || btn.dataset.mode === state.mode) return;
+  state.mode = btn.dataset.mode;
+  applyMode();
+  state.places = [];
   reloadSoon();
 });
 
@@ -445,6 +515,7 @@ async function start() {
   const params = new URLSearchParams(location.search);
   const qLat = parseFloat(params.get('lat')), qLon = parseFloat(params.get('lon')), qR = parseInt(params.get('r'), 10);
   if ([500, 1000, 2000, 5000].includes(qR)) { state.radius = qR; els.radius.value = String(qR); }
+  if (params.get('mode') === 'nature') { state.mode = 'nature'; applyMode(); }
 
   if (Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180) {
     map.setView([qLat, qLon], zoomForRadius(state.radius));

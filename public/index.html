@@ -19,7 +19,7 @@
       <span class="brand-mark"></span>
       <div>
         <h1>Silence Map</h1>
-        <p>The quietest, least-documented places nearby</p>
+        <p>Quiet, hidden and green places nearby</p>
       </div>
     </div>
     <form id="searchForm" class="search-form" role="search" autocomplete="off">
@@ -49,8 +49,12 @@
 
     <aside class="sidebar">
       <div class="sidebar-header">
-        <h2>Quietest spots</h2>
+        <h2 id="modeTitle">Quietest spots</h2>
         <span id="resultCount" class="tag">—</span>
+      </div>
+      <div class="modes" role="tablist" aria-label="Map mode">
+        <button type="button" class="mode on" data-mode="quiet" role="tab" aria-selected="true">Hidden &amp; quiet</button>
+        <button type="button" class="mode" data-mode="nature" role="tab" aria-selected="false">Nature &amp; calm</button>
       </div>
       <p id="areaLabel" class="area-label">Loading…</p>
 
@@ -67,7 +71,7 @@
         <label class="field">
           <span>Sort by</span>
           <select id="sortSelect">
-            <option value="quiet" selected>Quietest first</option>
+            <option value="quiet" id="sortBestOpt" selected>Quietest first</option>
             <option value="near">Nearest first</option>
           </select>
         </label>
@@ -80,10 +84,17 @@
         <button type="button" class="chip on" data-type="leisure" aria-pressed="true">Parks &amp; leisure</button>
       </div>
 
-      <div class="legend">
-        <div class="legend-bar" aria-hidden="true"></div>
-        <div class="legend-labels"><span>Well documented</span><span>Almost invisible</span></div>
-        <p>The score shows how little is recorded about a place on OpenStreetMap — no website, hours or phone. Higher means quieter.</p>
+      <div class="chips" id="natureChips" role="group" aria-label="Nature types" hidden>
+        <button type="button" class="chip on" data-type="green" aria-pressed="true">Parks &amp; gardens</button>
+        <button type="button" class="chip on" data-type="wild" aria-pressed="true">Forests &amp; reserves</button>
+        <button type="button" class="chip on" data-type="water" aria-pressed="true">Lakes &amp; beaches</button>
+        <button type="button" class="chip on" data-type="view" aria-pressed="true">Viewpoints &amp; peaks</button>
+      </div>
+
+      <div class="legend" id="legend">
+        <div class="legend-bar" id="legendBar" aria-hidden="true"></div>
+        <div class="legend-labels"><span id="legendLow">Well documented</span><span id="legendHigh">Almost invisible</span></div>
+        <p id="legendText">The score shows how little is recorded about a place on OpenStreetMap — no website, hours or phone. Higher means quieter.</p>
       </div>
 
       <div id="placeList" class="place-list" aria-live="polite">

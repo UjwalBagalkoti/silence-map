@@ -126,42 +126,8 @@ app.get('/api/geocode', async (req, res) => {
   }
 });
 
-/**
- * GET /api/silence-map?lat=&lon=&radius=<meters>&types=amenity,shop,tourism,leisure
- *
- * Finds named points of interest (nodes AND ways, e.g. parks and buildings)
- * near a coordinate via the Overpass API, then scores each by how little is
- * documented about it. Absence of data is the signal.
- */
-app.get('/api/silence-map', async (req, res) => {
-  const lat = parseFloat(req.query.lat);
-  const lon = parseFloat(req.query.lon);
-  if (Number.isNaN(lat) || Number.isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
-    return res.status(400).json({ error: 'Query parameters "lat" and "lon" must be valid coordinates.' });
-  }
-  const radius = Math.max(200, Math.min(parseInt(req.query.radius, 10) || 2000, 5000));
-
-  const requested = String(req.query.types || '').split(',').map(s => s.trim()).filter(Boolean);
-  const groups = requested.length ? ALL_GROUPS.filter(g => requested.includes(g)) : ALL_GROUPS;
-  if (!groups.length) return res.status(400).json({ error: 'No valid place types selected.' });
-
-  const cacheKey = `${lat.toFixed(3)}|${lon.toFixed(3)}|${radius}|${groups.join(',')}`;
-  const cached = placesCache.get(cacheKey);
-  if (cached) {
-    // Distances depend on the exact centre, so recompute them for the cached set.
-    const places = cached.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
-    return res.json({ count: places.length, radius, center: { lat, lon }, cached: true, places });
-  }
-
-  const query = `
-    [out:json][timeout:25];
-    (
-      ${groups.map(g => `nwr["name"]["${g}"](around:${radius},${lat},${lon});`).join('\n      ')}
-    );
-    out center tags 500;
-  `;
-
-  let data;
+/** Run an Overpass query, trying each mirror in turn. */
+async function overpass(query) {
   let lastErr;
   for (const endpoint of OVERPASS_ENDPOINTS) {
     try {
@@ -171,50 +137,250 @@ app.get('/api/silence-map', async (req, res) => {
         body: query
       });
       if (!r.ok) throw new Error(`Overpass responded with ${r.status}`);
-      data = await r.json();
-      break;
+      return await r.json();
     } catch (err) {
       lastErr = err;
     }
   }
-  if (!data) {
-    return res.status(502).json({ error: 'Could not reach the map data service. Please try again in a moment.', detail: lastErr && lastErr.message });
+  throw lastErr || new Error('Overpass unavailable');
+}
+
+/* ------------------------------------------------------------ nature mode */
+
+// How "natural" each OSM feature type is (0-100) and which filter group it belongs to.
+const NATURE_TYPES = {
+  forest: [100, 'wild'], wood: [100, 'wild'], nature_reserve: [100, 'wild'], national_park: [100, 'wild'],
+  protected_area: [95, 'wild'], wetland: [90, 'wild'], heath: [85, 'wild'], grassland: [72, 'wild'], scrub: [70, 'wild'],
+  water: [88, 'water'], beach: [88, 'water'], spring: [80, 'water'],
+  peak: [85, 'view'], cliff: [75, 'view'], viewpoint: [65, 'view'],
+  park: [72, 'green'], garden: [68, 'green'], meadow: [72, 'green'], common: [60, 'green'], village_green: [55, 'green']
+};
+const NATURE_KEYS = ['leisure', 'natural', 'landuse', 'boundary', 'tourism'];
+const NATURE_CLAUSES = {
+  green: [['leisure', 'park|garden|common'], ['landuse', 'meadow|village_green']],
+  wild: [['leisure', 'nature_reserve'], ['natural', 'wood|scrub|heath|grassland|wetland'], ['landuse', 'forest'], ['boundary', 'national_park|protected_area']],
+  water: [['natural', 'water|beach|spring']],
+  view: [['tourism', 'viewpoint'], ['natural', 'peak|cliff']]
+};
+const NATURE_GROUPS = Object.keys(NATURE_CLAUSES);
+
+// Noise sources: how far (metres) their noise is felt and how strongly.
+const NOISE_CLASSES = {
+  motorway: { reach: 350, w: 1.0 }, trunk: { reach: 300, w: 1.0 },
+  primary: { reach: 220, w: 0.85 }, secondary: { reach: 140, w: 0.6 },
+  rail: { reach: 180, w: 0.6 }
+};
+const NOISE_MAX_REACH = 350;
+
+function natureKind(tags) {
+  for (const key of NATURE_KEYS) {
+    const v = tags[key];
+    if (v && NATURE_TYPES[v]) return v;
   }
+  return null;
+}
+
+/** Turn Overpass way geometries into compact noise-source records. */
+function parseNoiseWays(elements) {
+  const ways = [];
+  for (const el of elements || []) {
+    if (el.type !== 'way' || !el.geometry || el.geometry.length < 2 || !el.tags) continue;
+    const cls = el.tags.railway === 'rail' ? 'rail' : el.tags.highway;
+    const spec = NOISE_CLASSES[cls];
+    if (!spec) continue;
+    const pts = el.geometry.map(g => [g.lat, g.lon]);
+    let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    for (const [la, lo] of pts) {
+      if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
+      if (lo < minLon) minLon = lo; if (lo > maxLon) maxLon = lo;
+    }
+    ways.push({ spec, pts, minLat, maxLat, minLon, maxLon });
+  }
+  return ways;
+}
+
+/** Estimated traffic/rail noise exposure (0-100) at a point; 0 = nothing noisy nearby. */
+function noiseAt(lat, lon, ways) {
+  const mLat = 111320;
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+  const padLat = NOISE_MAX_REACH / mLat;
+  const padLon = NOISE_MAX_REACH / mLon;
+  let worst = 0;
+  for (const w of ways) {
+    if (lat < w.minLat - padLat || lat > w.maxLat + padLat || lon < w.minLon - padLon || lon > w.maxLon + padLon) continue;
+    let best = Infinity;
+    for (let i = 0; i < w.pts.length - 1; i++) {
+      const ax = (w.pts[i][1] - lon) * mLon, ay = (w.pts[i][0] - lat) * mLat;
+      const bx = (w.pts[i + 1][1] - lon) * mLon, by = (w.pts[i + 1][0] - lat) * mLat;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+      const d = Math.hypot(ax + t * dx, ay + t * dy);
+      if (d < best) best = d;
+    }
+    const exposure = Math.max(0, 1 - best / w.spec.reach) * w.spec.w;
+    if (exposure > worst) worst = exposure;
+  }
+  return Math.round(worst * 100);
+}
+
+function noiseLabel(n) {
+  if (n == null) return 'Noise unknown';
+  if (n < 15) return 'Peaceful';
+  if (n < 40) return 'Some traffic noise';
+  return 'Busy road nearby';
+}
+
+/**
+ * Calm score for nature spots: mostly how far the place is from busy roads and
+ * railways, plus how natural the feature is, plus a small bonus when little is
+ * recorded about it (a hidden gem).
+ */
+function calmScore(peace, naturalness, hidden) {
+  return Math.round(0.55 * peace + 0.30 * naturalness + 0.15 * hidden);
+}
+
+async function natureMap(lat, lon, radius, groups) {
+  const clauses = groups.flatMap(g => NATURE_CLAUSES[g].map(([k, v]) => `nwr["name"]["${k}"~"^(${v})$"](around:${radius},${lat},${lon});`));
+  const natureQuery = `[out:json][timeout:25];(${clauses.join('')});out center tags 500;`;
+  const noiseQuery = `[out:json][timeout:25];(
+    way["highway"~"^(motorway|trunk|primary|secondary)$"](around:${radius + NOISE_MAX_REACH},${lat},${lon});
+    way["railway"="rail"](around:${radius + NOISE_MAX_REACH},${lat},${lon});
+  );out body geom 8000;`;
+
+  const [natureRes, noiseRes] = await Promise.allSettled([overpass(natureQuery), overpass(noiseQuery)]);
+  if (natureRes.status === 'rejected') throw natureRes.reason;
+
+  const noiseOk = noiseRes.status === 'fulfilled';
+  const noiseElements = noiseOk ? noiseRes.value.elements || [] : [];
+  const ways = noiseOk ? parseNoiseWays(noiseElements) : [];
 
   const seen = new Set();
   const places = [];
-  for (const el of data.elements || []) {
+  for (const el of natureRes.value.elements || []) {
     const tags = el.tags;
     const pLat = el.lat ?? (el.center && el.center.lat);
     const pLon = el.lon ?? (el.center && el.center.lon);
     if (!tags || !tags.name || pLat == null || pLon == null) continue;
     const uid = `${el.type}/${el.id}`;
     if (seen.has(uid)) continue;
+    const kind = natureKind(tags);
+    if (!kind) continue;
     seen.add(uid);
 
-    const group = groups.find(g => tags[g]) || 'amenity';
+    const [naturalness, group] = NATURE_TYPES[kind];
     const tagCount = Object.keys(tags).length;
+    const hidden = scoreFromTags(tagCount);
+    const noise = noiseOk ? noiseAt(pLat, pLon, ways) : null;
+    const peace = noise == null ? 60 : 100 - noise; // unknown noise: assume middling
     places.push({
       id: uid,
       name: tags.name,
-      category: String(tags[group] || 'place').replace(/_/g, ' '),
+      category: kind.replace(/_/g, ' '),
       group,
       lat: pLat,
       lon: pLon,
       tag_count: tagCount,
-      silence_score: scoreFromTags(tagCount),
-      missing: missingFacts(tags, group),
-      has_website: Boolean(tags.website || tags['contact:website']),
-      has_wikipedia: Boolean(tags.wikipedia || tags.wikidata)
+      silence_score: hidden,
+      naturalness,
+      noise,
+      noise_level: noiseLabel(noise),
+      calm_score: calmScore(peace, naturalness, hidden),
+      missing: missingFacts(tags, group)
     });
   }
 
-  places.sort((a, b) => b.silence_score - a.silence_score || a.tag_count - b.tag_count);
-  const top = places.slice(0, MAX_RESULTS);
-  placesCache.set(cacheKey, top);
+  places.sort((a, b) => b.calm_score - a.calm_score || b.naturalness - a.naturalness);
+  return {
+    places: places.slice(0, MAX_RESULTS),
+    noiseAvailable: noiseOk,
+    noisePartial: noiseOk && noiseElements.length >= 8000
+  };
+}
 
-  const withDistance = top.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
-  res.json({ count: withDistance.length, radius, center: { lat, lon }, cached: false, places: withDistance });
+/**
+ * GET /api/silence-map?lat=&lon=&radius=<meters>&mode=quiet|nature&types=...
+ *
+ * mode=quiet  (default): named points of interest scored by how little is
+ *   documented about them (types: amenity, shop, tourism, leisure).
+ * mode=nature: parks, forests, lakes, viewpoints etc. scored by how calm they
+ *   are (distance from busy roads/rail) and how natural they are
+ *   (types: green, wild, water, view).
+ */
+app.get('/api/silence-map', async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return res.status(400).json({ error: 'Query parameters "lat" and "lon" must be valid coordinates.' });
+  }
+  const radius = Math.max(200, Math.min(parseInt(req.query.radius, 10) || 2000, 5000));
+  const mode = req.query.mode === 'nature' ? 'nature' : 'quiet';
+
+  const allowed = mode === 'nature' ? NATURE_GROUPS : ALL_GROUPS;
+  const requested = String(req.query.types || '').split(',').map(s => s.trim()).filter(Boolean);
+  const groups = requested.length ? allowed.filter(g => requested.includes(g)) : allowed;
+  if (!groups.length) return res.status(400).json({ error: 'No valid place types selected.' });
+
+  const cacheKey = `${mode}|${lat.toFixed(3)}|${lon.toFixed(3)}|${radius}|${groups.join(',')}`;
+  const cached = placesCache.get(cacheKey);
+  if (cached) {
+    // Distances depend on the exact centre, so recompute them for the cached set.
+    const places = cached.places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
+    return res.json({ mode, count: places.length, radius, center: { lat, lon }, cached: true, ...cached.meta, places });
+  }
+
+  let places, meta = {};
+  try {
+    if (mode === 'nature') {
+      const r = await natureMap(lat, lon, radius, groups);
+      places = r.places;
+      meta = { noise_available: r.noiseAvailable, noise_partial: r.noisePartial };
+    } else {
+      const query = `
+        [out:json][timeout:25];
+        (
+          ${groups.map(g => `nwr["name"]["${g}"](around:${radius},${lat},${lon});`).join('\n          ')}
+        );
+        out center tags 500;
+      `;
+      const data = await overpass(query);
+      const seen = new Set();
+      places = [];
+      for (const el of data.elements || []) {
+        const tags = el.tags;
+        const pLat = el.lat ?? (el.center && el.center.lat);
+        const pLon = el.lon ?? (el.center && el.center.lon);
+        if (!tags || !tags.name || pLat == null || pLon == null) continue;
+        const uid = `${el.type}/${el.id}`;
+        if (seen.has(uid)) continue;
+        seen.add(uid);
+
+        const group = groups.find(g => tags[g]) || 'amenity';
+        const tagCount = Object.keys(tags).length;
+        places.push({
+          id: uid,
+          name: tags.name,
+          category: String(tags[group] || 'place').replace(/_/g, ' '),
+          group,
+          lat: pLat,
+          lon: pLon,
+          tag_count: tagCount,
+          silence_score: scoreFromTags(tagCount),
+          missing: missingFacts(tags, group),
+          has_website: Boolean(tags.website || tags['contact:website']),
+          has_wikipedia: Boolean(tags.wikipedia || tags.wikidata)
+        });
+      }
+      places.sort((a, b) => b.silence_score - a.silence_score || a.tag_count - b.tag_count);
+      places = places.slice(0, MAX_RESULTS);
+    }
+  } catch (err) {
+    return res.status(502).json({ error: 'Could not reach the map data service. Please try again in a moment.', detail: err && err.message });
+  }
+
+  placesCache.set(cacheKey, { places, meta });
+  const withDistance = places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
+  res.json({ mode, count: withDistance.length, radius, center: { lat, lon }, cached: false, ...meta, places: withDistance });
 });
 
 if (require.main === module) {

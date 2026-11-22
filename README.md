@@ -16,6 +16,7 @@ https://silence-map.vercel.app/
 ## Features
 
 - **Live GPS** — "My location" finds quiet spots around you, with a pulsing marker and accuracy ring. **Live** mode follows you as you move and refreshes the list automatically. If location is blocked, it explains how to fix it instead of failing silently.
+- **Nature & calm mode** — switch to a second lens that finds parks, gardens, forests, reserves, lakes, beaches and viewpoints, and ranks them by how *calm* they are. The calm score combines distance from busy roads and railways (an estimate from OpenStreetMap data, measured at the centre of each place), how natural the place is, and a small bonus for hidden gems. Each result shows Peaceful, Some traffic noise or Busy road nearby. The estimate does not measure real sound levels, crowds or noise from events.
 - **Why it's quiet** — every place shows what is *not* recorded (website, opening hours, phone, wheelchair info…) and a plain-language label from "Well documented" to "Almost invisible".
 - **Distance and directions** — see how far each place is and open walking directions in one tap.
 - **Radius, type filters and sorting** — 500 m to 5 km, food/shops/sights/parks, quietest-first or nearest-first.
@@ -29,7 +30,7 @@ https://silence-map.vercel.app/
 
 - **Backend** (Node + Express) exposes:
   - `GET /api/geocode?q=<place>` — place name to coordinates via [Nominatim](https://nominatim.org/)
-  - `GET /api/silence-map?lat=&lon=&radius=&types=amenity,shop,tourism,leisure` — queries the [Overpass API](https://overpass-api.de/) for named places (points, parks and buildings), counts how many OSM tags each has, and converts that into a 0–100 silence score
+  - `GET /api/silence-map?lat=&lon=&radius=&mode=quiet|nature&types=...` — queries the [Overpass API](https://overpass-api.de/). `mode=quiet` (types `amenity,shop,tourism,leisure`) counts how many OSM tags each named place has and converts that into a 0–100 silence score. `mode=nature` (types `green,wild,water,view`) finds named green and water spaces and scores them for calmness using nearby motorways, main roads and railways
   - `GET /api/health` — simple status check
 - **Frontend** is a static Leaflet map with a sidebar list, colour-coded and sized by silence score.
 
