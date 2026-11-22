@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#0A0A0C" />
+<meta name="description" content="Silence Map finds the quietest, least-documented places near you using OpenStreetMap." />
 <title>Silence Map</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,25 +22,74 @@
         <p>The quietest, least-documented places nearby</p>
       </div>
     </div>
-    <form id="searchForm" class="search-form">
-      <input id="searchInput" type="text" placeholder="Search a city or place…" autocomplete="off" />
+    <form id="searchForm" class="search-form" role="search" autocomplete="off">
+      <div class="search-box">
+        <input id="searchInput" type="search" placeholder="Search a city or place…" aria-label="Search a city or place"
+               aria-autocomplete="list" aria-controls="suggestions" />
+        <ul id="suggestions" class="suggestions" role="listbox" hidden></ul>
+      </div>
       <button type="submit">Search</button>
-      <button type="button" id="locateBtn">Use my location</button>
+      <button type="button" id="locateBtn" class="primary" aria-label="Use my current location">
+        <span class="dot" aria-hidden="true"></span> My location
+      </button>
     </form>
   </header>
 
   <main class="layout">
+    <section class="map-wrap" aria-label="Map">
+      <div id="map"></div>
+      <button type="button" id="searchAreaBtn" class="pill" hidden>Search this area</button>
+      <div class="map-controls">
+        <button type="button" id="followBtn" class="fab" aria-pressed="false" title="Follow my location live">
+          <span aria-hidden="true">◎</span><span class="fab-label">Live</span>
+        </button>
+      </div>
+      <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </section>
+
     <aside class="sidebar">
       <div class="sidebar-header">
         <h2>Quietest spots</h2>
         <span id="resultCount" class="tag">—</span>
       </div>
-      <p class="legend">Score reflects how little is recorded about a place on OpenStreetMap — no website, hours, or category detail. High score = practically undocumented.</p>
-      <div id="placeList" class="place-list">
+      <p id="areaLabel" class="area-label">Loading…</p>
+
+      <div class="controls">
+        <label class="field">
+          <span>Search radius</span>
+          <select id="radiusSelect">
+            <option value="500">500 m</option>
+            <option value="1000">1 km</option>
+            <option value="2000" selected>2 km</option>
+            <option value="5000">5 km</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Sort by</span>
+          <select id="sortSelect">
+            <option value="quiet" selected>Quietest first</option>
+            <option value="near">Nearest first</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="chips" id="typeChips" role="group" aria-label="Place types">
+        <button type="button" class="chip on" data-type="amenity" aria-pressed="true">Food &amp; services</button>
+        <button type="button" class="chip on" data-type="shop" aria-pressed="true">Shops</button>
+        <button type="button" class="chip on" data-type="tourism" aria-pressed="true">Sights</button>
+        <button type="button" class="chip on" data-type="leisure" aria-pressed="true">Parks &amp; leisure</button>
+      </div>
+
+      <div class="legend">
+        <div class="legend-bar" aria-hidden="true"></div>
+        <div class="legend-labels"><span>Well documented</span><span>Almost invisible</span></div>
+        <p>The score shows how little is recorded about a place on OpenStreetMap — no website, hours or phone. Higher means quieter.</p>
+      </div>
+
+      <div id="placeList" class="place-list" aria-live="polite">
         <p class="empty-state">Loading a default view…</p>
       </div>
     </aside>
-    <div id="map"></div>
   </main>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

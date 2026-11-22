@@ -13,14 +13,29 @@ It's a small experiment in treating missing data as meaningful rather than as a 
 ## Live Project
 https://silence-map.vercel.app/
 
+## Features
+
+- **Live GPS** — "My location" finds quiet spots around you, with a pulsing marker and accuracy ring. **Live** mode follows you as you move and refreshes the list automatically. If location is blocked, it explains how to fix it instead of failing silently.
+- **Why it's quiet** — every place shows what is *not* recorded (website, opening hours, phone, wheelchair info…) and a plain-language label from "Well documented" to "Almost invisible".
+- **Distance and directions** — see how far each place is and open walking directions in one tap.
+- **Radius, type filters and sorting** — 500 m to 5 km, food/shops/sights/parks, quietest-first or nearest-first.
+- **Search suggestions** — type a place and pick the right match, with keyboard support.
+- **Search this area** — pan the map, then tap one button to look around the new spot.
+- **Shareable links** — the URL carries the area and radius, so you can send a view to a friend. It also remembers your last search.
+- **Mobile friendly** — map first, list below, large touch targets, no zoom-on-focus on iOS.
+- **Safer and faster** — place names are rendered as plain text (OpenStreetMap data is user-contributed), results are cached for 10 minutes, and a backup Overpass server is used if the first is busy.
+
 ## How it works
 
-- **Backend** (Node + Express) exposes two endpoints:
-  - `GET /api/geocode?q=<place>` — turns a search term into coordinates via [Nominatim](https://nominatim.org/) (OpenStreetMap's free geocoder)
-  - `GET /api/silence-map?lat=<n>&lon=<n>&radius=<meters>` — queries the [Overpass API](https://overpass-api.de/) for named points of interest nearby, counts how many OSM tags each one has, and converts that into a 0–100 "silence score" (fewer tags = higher score)
-- **Frontend** is a static Leaflet map with a sidebar list, color-coded and sized by silence score.
+- **Backend** (Node + Express) exposes:
+  - `GET /api/geocode?q=<place>` — place name to coordinates via [Nominatim](https://nominatim.org/)
+  - `GET /api/silence-map?lat=&lon=&radius=&types=amenity,shop,tourism,leisure` — queries the [Overpass API](https://overpass-api.de/) for named places (points, parks and buildings), counts how many OSM tags each has, and converts that into a 0–100 silence score
+  - `GET /api/health` — simple status check
+- **Frontend** is a static Leaflet map with a sidebar list, colour-coded and sized by silence score.
 
-**No API keys required anywhere** — every data source used (OpenStreetMap tiles, Nominatim, Overpass) is free and open, so the app runs immediately with no signup.
+Location is only used in your browser to centre the search. It is sent to the server as plain coordinates for the lookup and is not stored. Browsers only allow location on `https://` pages (or `localhost`).
+
+**No API keys required anywhere** — OpenStreetMap tiles, Nominatim and Overpass are free and open.
 
 ## Getting started
 
