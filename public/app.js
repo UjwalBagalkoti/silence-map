@@ -712,10 +712,20 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
   safeStorage('set', 'silence-map:last', { lat, lon, label: state.label });
   updateUrl();
 
+  let shownEarlier = false;
   try {
     const mode = state.mode;
     const types = mode === 'nature' ? state.natureTypes : state.types;
     const qs = new URLSearchParams({ lat, lon, radius: state.radius, mode, types: [...types].join(',') });
+    const ckey = `silence-map:res:${mode}|${(+lat).toFixed(3)}|${(+lon).toFixed(3)}|${state.radius}|${[...types].join(',')}`;
+    // Show the last results for this spot instantly, then refresh them in the background.
+    const earlier = safeStorage('get', ckey);
+    if (earlier && Array.isArray(earlier.places) && Date.now() - earlier.t < 6 * 3600 * 1000) {
+      state.placesMode = earlier.mode;
+      state.places = earlier.places.map(p => ({ ...p, mode: earlier.mode }));
+      updateMapLegend(); renderPlaces(); shownEarlier = true;
+      toast('Showing saved results. Updating…', 3000);
+    }
 
     // The free map servers are sometimes busy. Try once more before giving up.
     let res = null, data = {};
@@ -738,10 +748,17 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
     if (!res.ok) throw new Error(data.error || 'The server could not process that location.');
     if (!els.toast.hidden && /Trying again/.test(els.toast.textContent)) els.toast.hidden = true;
 
+    const sameAsShown = shownEarlier && earlier.places.length === data.places.length && earlier.places.every((p, i) => p.id === data.places[i].id);
+    safeStorage('set', ckey, { t: Date.now(), mode: data.mode || mode, places: data.places });
+    try {   // keep only the 12 newest saved result sets
+      const ks = Object.keys(localStorage).filter(k => k.startsWith('silence-map:res:'))
+        .map(k => [k, (JSON.parse(localStorage.getItem(k)) || {}).t || 0]).sort((x, y) => y[1] - x[1]);
+      ks.slice(12).forEach(([k]) => localStorage.removeItem(k));
+    } catch (_) {}
     state.placesMode = data.mode || mode;
     state.places = data.places.map(p => ({ ...p, mode: state.placesMode }));
     updateMapLegend();
-    renderPlaces();
+    if (!sameAsShown) renderPlaces();
     if (data.stale) toast('Showing earlier results because the free map servers are busy right now.', 6000);
     else if (state.placesMode === 'nature') {
       if (state.radius > 10000) { /* noise is not checked for wide searches */ }
@@ -753,7 +770,8 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
     if (state.places.length && !safeStorage('get', 'silence-map:pinhint')) { toast('Tap any pin to see the place, its photo and directions.', 6000); safeStorage('set', 'silence-map:pinhint', 1); }
   } catch (err) {
     if (seq !== state.loadSeq) return;
-    if (/Trying again/.test(els.toast.textContent)) els.toast.hidden = true;
+    if (/Trying again|Updating/.test(els.toast.textContent)) els.toast.hidden = true;
+    if (shownEarlier) { toast('Could not update. Showing saved results.', 5000); return; }
     els.count.textContent = '—';
     showMessage(`Could not load places: ${err.message}`, 'Try again', () => loadSilenceMap(lat, lon, label, { keepView: true }));
   }

@@ -11,14 +11,14 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter'
 ];
-const OVERPASS_HEDGE_MS = 3000;   // start the next mirror if the current one is slow
+const OVERPASS_HEDGE_MS = 1500;   // start the next mirror if the current one is slow
 const OVERPASS_ATTEMPT_MS = 14000;
 const ALL_GROUPS = ['amenity', 'shop', 'tourism', 'leisure'];
 const MAX_RESULTS = 60;
 const MAX_RADIUS = 300000;      // 300 km
 const WIDE_RADIUS = 10000;      // beyond this only notable places are searched, to keep the query fast
 const WIDE_ATTEMPT_MS = 40000;
-const CACHE_TTL_MS = 10 * 60 * 1000;
+const CACHE_TTL_MS = 30 * 60 * 1000;
 const GEOCODE_TTL_MS = 60 * 60 * 1000;
 
 app.set('trust proxy', 1);
