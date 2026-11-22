@@ -283,7 +283,8 @@ function iconFor(p) {
   return ({ green: '🌳', wild: '🌲', water: '💧', view: '⛰', shop: '🛍', tourism: '📍', leisure: '🌳', amenity: '📍' })[p.group] || '📍';
 }
 function pinIcon(p, color, n) {
-  const html = `<div class="pin"><svg viewBox="0 0 40 52" width="40" height="52" aria-hidden="true">` +
+  const sc = scoreOf(p), tier = sc >= 70 ? 'top' : sc >= 45 ? 'mid' : 'low';
+  const html = `<div class="pin pin-${tier}"><svg viewBox="0 0 40 52" width="40" height="52" aria-hidden="true">` +
     `<path d="M20 51C20 51 3 31 3 19a17 17 0 0 1 34 0c0 12-17 32-17 32z" fill="${color}" stroke="#fff" stroke-width="3"/></svg>` +
     `<span class="pin-glyph">${iconFor(p)}</span>${n ? `<span class="pin-num">${n}</span>` : ''}</div>`;
   return L.divIcon({ html, className: 'pin-wrap', iconSize: [40, 52], iconAnchor: [20, 50], popupAnchor: [0, -46], tooltipAnchor: [0, -40] });
@@ -316,7 +317,7 @@ function initMap() {
   if ('ResizeObserver' in window) new ResizeObserver(() => map.invalidateSize()).observe($('map'));
   window.addEventListener('load', () => map.invalidateSize());
   map.on('popupclose', () => setSelected(null));
-  map.on('popupopen', refreshFavUi);
+  map.on('popupopen', () => { refreshFavUi(); const h = document.getElementById('mapHint'); if (h) h.classList.add('gone'); });
 
   // Offer "Search this area" once the user pans far from the last search.
   map.on('moveend', () => {
@@ -478,7 +479,8 @@ function distanceOf(p) {
 
 function sortedPlaces() {
   const source = state.view === 'saved' ? getFavs() : state.places;
-  const arr = source.map(p => ({ ...p, _d: distanceOf(p) }));
+  let arr = source.map(p => ({ ...p, _d: distanceOf(p) }));
+  if (state.quietOnly && state.view !== 'saved') { const q = arr.filter(p => scoreOf(p) >= 70); if (q.length) arr = q; }
   if (state.sort === 'near' || state.view === 'saved') arr.sort((a, b) => a._d - b._d);
   else arr.sort((a, b) => scoreOf(b) - scoreOf(a) || a.tag_count - b.tag_count);
   return arr;
@@ -578,7 +580,7 @@ function renderPlaces() {
     const score = scoreOf(p);
     const color = scoreColor(score, p.mode);
     const nature = p.mode === 'nature';
-    const marker = L.marker([p.lat, p.lon], { icon: pinIcon(p, color, idx + 1), title: p.name, riseOnHover: true, keyboard: true })
+    const marker = L.marker([p.lat, p.lon], { icon: pinIcon(p, color, idx + 1), title: p.name, riseOnHover: true, keyboard: true, zIndexOffset: Math.round(score * 10) })
       .bindPopup(() => popupFor(p), { minWidth: 220, maxWidth: 280, autoPanPaddingTopLeft: [10, 70], autoPanPaddingBottomRight: [10, 20] })
       .bindTooltip(p.name, { direction: 'top', offset: [0, -2], className: 'pin-tip' });
     marker.addTo(markersLayer);
@@ -637,6 +639,19 @@ function renderPlaces() {
 }
 
 /** Zoom so every result is on screen. Search radius alone can leave pins off-screen on small maps. */
+/** Pop up the quietest place so the best result is the first thing seen. */
+function openQuietest() {
+  const top = sortedPlaces()[0];
+  if (!top || scoreOf(top) < 70 || state.selectedId) return;
+  const m = state.markers.get(top.id);
+  if (!m) return;
+  setTimeout(() => {
+    if (state.selectedId) return;
+    setSelected(top.id);
+    if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(m, () => m.openPopup()); else m.openPopup();
+  }, 500);
+}
+
 function fitAll(places = sortedPlaces()) {
   if (!places.length) return;
   map.invalidateSize();
@@ -724,6 +739,7 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
       else if (data.noise_partial) toast('This area is very busy, so the noise estimate may be incomplete. Try a smaller radius.', 6000);
     }
     openPendingPlace();
+    if (!state.pendingPlace && state.view !== 'saved') openQuietest();
     if (state.places.length && !safeStorage('get', 'silence-map:pinhint')) { toast('Tap any pin to see the place, its photo and directions.', 6000); safeStorage('set', 'silence-map:pinhint', 1); }
   } catch (err) {
     if (seq !== state.loadSeq) return;
@@ -938,9 +954,11 @@ window.addEventListener('pagehide', stopFollow);
 /* -------------------------------------------------------------------- start */
 
 setTimeout(() => { const h = document.getElementById('mapHint'); if (h) h.classList.add('gone'); }, 12000);
+document.getElementById('quietOnly').addEventListener('change', e => { state.quietOnly = e.target.checked; safeStorage('set', 'silence-map:quietonly', state.quietOnly); renderPlaces(); openQuietest(); });
 document.getElementById('fitBtn').addEventListener('click', () => fitAll());
 
 async function start() {
+  state.quietOnly = !!safeStorage('get', 'silence-map:quietonly'); document.getElementById('quietOnly').checked = state.quietOnly;
   initMap();
   updateMapLegend();
   refreshFavUi();

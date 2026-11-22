@@ -368,3 +368,15 @@ body.nature .map-legend .bar{background:linear-gradient(90deg, rgb(60,68,64), rg
 .marker-cluster{border-radius:50%;background-clip:padding-box;}
 .marker-cluster div{width:30px;height:30px;margin:5px 0 0 5px;border-radius:50%;text-align:center;font:700 13px/30px Inter,sans-serif;border:2px solid #fff;}
 .marker-cluster span{line-height:30px;}
+
+/* ---- v1.5 quiet places stand out ---- */
+.pin-top{transform:scale(1.2);}
+.pin-top::before{content:"";position:absolute;left:4px;top:-2px;width:32px;height:32px;border-radius:50%;background:rgba(31,169,91,.45);animation:ring 1.8s ease-out infinite;z-index:-1;}
+@keyframes ring{0%{transform:scale(.7);opacity:.9}100%{transform:scale(2.2);opacity:0}}
+.pin-mid{transform:scale(.9);opacity:.9;}
+.pin-low{transform:scale(.7);opacity:.6;filter:grayscale(.3) drop-shadow(0 2px 3px rgba(0,0,0,.4));}
+.pin-wrap:hover .pin-top,.pin-selected .pin-top{transform:scale(1.4);}
+.pin-wrap:hover .pin-low,.pin-wrap:hover .pin-mid{transform:scale(1);opacity:1;}
+.pin-selected .pin-mid,.pin-selected .pin-low{opacity:1;transform:scale(1.35);}
+.quiet-only{display:flex;gap:8px;align-items:center;font-size:13px;margin:0 0 8px;cursor:pointer;color:var(--text-primary);}
+.saved-bar{flex-wrap:wrap;gap:8px;}
