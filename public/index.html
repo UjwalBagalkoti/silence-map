@@ -4,8 +4,22 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="theme-color" content="#0A0A0C" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icon-192.png" type="image/png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Silence Map" />
 <meta name="description" content="Silence Map finds the quietest, least-documented places near you using OpenStreetMap." />
 <title>Silence Map</title>
+<script>
+  // Set the theme before first paint so there is no flash. Saved choice wins, else the device setting.
+  (function () {
+    var t = null;
+    try { t = JSON.parse(localStorage.getItem('silence-map:theme')); } catch (e) {}
+    if (t !== 'light' && t !== 'dark') t = (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+</script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -32,6 +46,8 @@
       <button type="button" id="locateBtn" class="primary" aria-label="Use my current location">
         <span class="dot" aria-hidden="true"></span> My location
       </button>
+      <button type="button" id="installBtn" hidden>Install app</button>
+      <button type="button" id="themeBtn" class="icon-toggle" aria-label="Switch to light theme" title="Switch theme">☀</button>
     </form>
   </header>
 
@@ -48,9 +64,24 @@
     </section>
 
     <aside class="sidebar">
+      <section id="intro" class="intro" hidden aria-label="How Silence Map works">
+        <h3>How it works</h3>
+        <ul>
+          <li><strong>Hidden &amp; quiet</strong> finds places very few people have documented. A higher score means quieter.</li>
+          <li><strong>Nature &amp; calm</strong> finds parks, forests and lakes that are away from busy roads.</li>
+          <li>Tap <strong>My location</strong> for spots around you, or search any place. Tap the heart to save a spot.</li>
+        </ul>
+        <button type="button" id="introClose">Got it</button>
+      </section>
       <div class="sidebar-header">
         <h2 id="modeTitle">Quietest spots</h2>
-        <span id="resultCount" class="tag">—</span>
+        <span class="header-right">
+          <span id="resultCount" class="tag">—</span>
+          <button type="button" id="helpBtn" class="icon-btn" aria-label="How it works" title="How it works">?</button>
+        </span>
+      </div>
+      <div class="saved-bar">
+        <button type="button" id="savedBtn" class="saved-btn" aria-pressed="false">♥ Saved <span id="savedCount">0</span></button>
       </div>
       <div class="modes" role="tablist" aria-label="Map mode">
         <button type="button" class="mode on" data-mode="quiet" role="tab" aria-selected="true">Hidden &amp; quiet</button>

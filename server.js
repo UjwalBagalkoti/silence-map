@@ -8,8 +8,11 @@ const USER_AGENT = 'SilenceMap/1.1 (github.com/UjwalBagalkoti/silence-map)';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter'
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
 ];
+const OVERPASS_HEDGE_MS = 3000;   // start the next mirror if the current one is slow
+const OVERPASS_ATTEMPT_MS = 14000;
 const ALL_GROUPS = ['amenity', 'shop', 'tourism', 'leisure'];
 const MAX_RESULTS = 60;
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -25,10 +28,10 @@ app.use(express.json());
 function makeCache(ttl, maxEntries = 300) {
   const store = new Map();
   return {
-    get(key) {
+    get(key, { allowStale = false } = {}) {
       const hit = store.get(key);
       if (!hit) return undefined;
-      if (Date.now() - hit.t > ttl) { store.delete(key); return undefined; }
+      if (!allowStale && Date.now() - hit.t > ttl) return undefined;
       return hit.v;
     },
     set(key, v) {
@@ -126,23 +129,69 @@ app.get('/api/geocode', async (req, res) => {
   }
 });
 
-/** Run an Overpass query, trying each mirror in turn. */
-async function overpass(query) {
-  let lastErr;
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const r = await fetchWithTimeout(endpoint, {
+/**
+ * Run an Overpass query against several public mirrors. Cloud hosts are often
+ * rate-limited or slow on any single mirror, so if the first has not answered
+ * after a few seconds the next one is started too, and the first success wins.
+ */
+function overpass(query) {
+  return new Promise((resolve, reject) => {
+    const controllers = [];
+    let hedgeTimer = null;
+    let nextIdx = 0;
+    let running = 0;
+    let done = false;
+    let lastErr;
+
+    const finish = (fn, value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(hedgeTimer);
+      controllers.forEach(c => c.abort());
+      fn(value);
+    };
+
+    // Start the next mirror, and schedule another one in case this one is slow.
+    const startNext = () => {
+      clearTimeout(hedgeTimer);
+      if (done || nextIdx >= OVERPASS_ENDPOINTS.length) return false;
+      const endpoint = OVERPASS_ENDPOINTS[nextIdx++];
+      const ctrl = new AbortController();
+      controllers.push(ctrl);
+      const timeout = setTimeout(() => ctrl.abort(), OVERPASS_ATTEMPT_MS);
+      running += 1;
+      fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain', 'User-Agent': USER_AGENT },
-        body: query
-      });
-      if (!r.ok) throw new Error(`Overpass responded with ${r.status}`);
-      return await r.json();
-    } catch (err) {
-      lastErr = err;
-    }
-  }
-  throw lastErr || new Error('Overpass unavailable');
+        body: query,
+        signal: ctrl.signal
+      })
+        .then(r => {
+          if (!r.ok) throw new Error(`Overpass responded with ${r.status}`);
+          return r.json();
+        })
+        .then(data => {
+          // Overpass reports server-side timeouts as a "remark" with an empty result.
+          if (data && data.remark && /timed out|out of memory/i.test(data.remark) && !(data.elements || []).length) {
+            throw new Error('Overpass query timed out');
+          }
+          clearTimeout(timeout);
+          finish(resolve, data);
+        })
+        .catch(err => {
+          clearTimeout(timeout);
+          if (done) return;
+          lastErr = err;
+          running -= 1;
+          // A failed mirror hands over to the next one straight away.
+          if (!startNext() && running === 0) finish(reject, lastErr || new Error('Overpass unavailable'));
+        });
+      if (nextIdx < OVERPASS_ENDPOINTS.length) hedgeTimer = setTimeout(startNext, OVERPASS_HEDGE_MS);
+      return true;
+    };
+
+    startNext();
+  });
 }
 
 /* ------------------------------------------------------------ nature mode */
@@ -286,7 +335,8 @@ async function natureMap(lat, lon, radius, groups) {
       noise,
       noise_level: noiseLabel(noise),
       calm_score: calmScore(peace, naturalness, hidden),
-      missing: missingFacts(tags, group)
+      missing: missingFacts(tags, group),
+      opening_hours: tags.opening_hours ? String(tags.opening_hours).slice(0, 200) : undefined
     });
   }
 
@@ -367,6 +417,7 @@ app.get('/api/silence-map', async (req, res) => {
           tag_count: tagCount,
           silence_score: scoreFromTags(tagCount),
           missing: missingFacts(tags, group),
+          opening_hours: tags.opening_hours ? String(tags.opening_hours).slice(0, 200) : undefined,
           has_website: Boolean(tags.website || tags['contact:website']),
           has_wikipedia: Boolean(tags.wikipedia || tags.wikidata)
         });
@@ -375,7 +426,13 @@ app.get('/api/silence-map', async (req, res) => {
       places = places.slice(0, MAX_RESULTS);
     }
   } catch (err) {
-    return res.status(502).json({ error: 'Could not reach the map data service. Please try again in a moment.', detail: err && err.message });
+    // Serve the last good result for this spot (even if old) rather than nothing.
+    const stale = placesCache.get(cacheKey, { allowStale: true });
+    if (stale) {
+      const old = stale.places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
+      return res.json({ mode, count: old.length, radius, center: { lat, lon }, cached: true, stale: true, ...stale.meta, places: old });
+    }
+    return res.status(502).json({ error: 'The free map data servers are busy right now. Please try again in a moment.', detail: err && err.message });
   }
 
   placesCache.set(cacheKey, { places, meta });

@@ -23,6 +23,15 @@ https://silence-map.vercel.app/
 - **Search suggestions** — type a place and pick the right match, with keyboard support.
 - **Search this area** — pan the map, then tap one button to look around the new spot.
 - **Shareable links** — the URL carries the area and radius, so you can send a view to a friend. It also remembers your last search.
+- **Saved places** — tap the heart on any place to keep it. Saved places live on your device (no account), work together with the "Saved" list and are shown on the map.
+- **Clear map** — an on-map legend explains the colours, and the place you select is highlighted on both the map and the list.
+- **Never a dead end** — if nothing is found, one tap widens the search (or switches mode). Busy map servers are retried automatically and the last good results are shown if they stay busy.
+- **First-visit guide** — a short "How it works" card explains the scores. Reopen it any time with the **?** button.
+- **Opening hours** — hours recorded on OpenStreetMap are shown, with an "Open now / Closed now" badge when you are near the place, and a tip when a place opens early in the morning. Complex hour formats are shown as text only.
+- **Share one place** — a Share button creates a link that opens that exact spot.
+- **Improve the map** — each place links to its OpenStreetMap page and editor, so missing details can be added and the data gets better for everyone.
+- **Light and dark theme** — follows your device setting and can be switched with the sun/moon button.
+- **Install as an app** — works as a Progressive Web App (home-screen icon, full screen). The app shell opens offline; searching needs a connection.
 - **Mobile friendly** — map first, list below, large touch targets, no zoom-on-focus on iOS.
 - **Safer and faster** — place names are rendered as plain text (OpenStreetMap data is user-contributed), results are cached for 10 minutes, and a backup Overpass server is used if the first is busy.
 
