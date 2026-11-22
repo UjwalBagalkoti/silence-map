@@ -1,6 +1,6 @@
 {
   "name": "silence-map",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Maps the quietest, least-documented places near you, using absence of data as the signal.",
   "main": "server.js",
   "scripts": {

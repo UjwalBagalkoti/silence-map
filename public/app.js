@@ -73,14 +73,9 @@ function formatDistance(m) {
   return `${(m / 1000).toFixed(m < 10000 ? 1 : 0)} km`;
 }
 
-function scoreColor(score, mode) {
-  const t = score / 100;
-  if (mode === 'nature') {
-    // 0 = busy (muted gray), 100 = very calm and natural (green)
-    return `rgb(${Math.round(60 + t * 10)},${Math.round(68 + t * 132)},${Math.round(64 + t * 56)})`;
-  }
-  // 0 = well documented (muted gray), 100 = practically undocumented (bright violet)
-  return `rgb(${Math.round(60 + t * 85)},${Math.round(60 + t * 42)},${Math.round(68 + t * 150)})`;
+function scoreColor(score) {
+  // Traffic-light colours anyone can read: green = quiet, amber = fairly quiet, orange = busier.
+  return score >= 70 ? '#1FA95B' : score >= 45 ? '#E3A21A' : '#E8663D';
 }
 
 function scoreOf(p) {
@@ -88,16 +83,8 @@ function scoreOf(p) {
 }
 
 function scoreLabel(score, mode) {
-  if (mode === 'nature') {
-    if (score >= 80) return 'Very calm';
-    if (score >= 65) return 'Calm';
-    if (score >= 50) return 'Fairly calm';
-    return 'Busy surroundings';
-  }
-  if (score >= 80) return 'Almost invisible';
-  if (score >= 60) return 'Very quiet';
-  if (score >= 40) return 'Quiet';
-  return 'Well documented';
+  if (mode === 'nature') return score >= 70 ? 'Very calm' : score >= 45 ? 'Fairly calm' : 'Near busy roads';
+  return score >= 70 ? 'Very quiet' : score >= 45 ? 'Fairly quiet' : 'Busier / well known';
 }
 
 /* ------------------------------------------------------ opening hours (simple) */
@@ -295,10 +282,10 @@ function iconFor(p) {
   for (const [re, ch] of ICONS) if (re.test(c)) return ch;
   return ({ green: '🌳', wild: '🌲', water: '💧', view: '⛰', shop: '🛍', tourism: '📍', leisure: '🌳', amenity: '📍' })[p.group] || '📍';
 }
-function pinIcon(p, color) {
+function pinIcon(p, color, n) {
   const html = `<div class="pin"><svg viewBox="0 0 40 52" width="40" height="52" aria-hidden="true">` +
     `<path d="M20 51C20 51 3 31 3 19a17 17 0 0 1 34 0c0 12-17 32-17 32z" fill="${color}" stroke="#fff" stroke-width="3"/></svg>` +
-    `<span class="pin-glyph">${iconFor(p)}</span></div>`;
+    `<span class="pin-glyph">${iconFor(p)}</span>${n ? `<span class="pin-num">${n}</span>` : ''}</div>`;
   return L.divIcon({ html, className: 'pin-wrap', iconSize: [40, 52], iconAnchor: [20, 50], popupAnchor: [0, -46], tooltipAnchor: [0, -40] });
 }
 
@@ -317,7 +304,7 @@ function initMap() {
     options: { position: 'bottomleft' },
     onAdd() {
       const box = L.DomUtil.create('div', 'map-legend');
-      box.innerHTML = '<div id="mapLegendTitle"></div><div class="bar"></div><div class="row"><span id="mapLegendLow"></span><span id="mapLegendHigh"></span></div>';
+      box.innerHTML = '<div class="lg"><i style="background:#1FA95B"></i><span id="mapLegendHigh"></span></div><div class="lg"><i style="background:#E3A21A"></i><span id="mapLegendMid"></span></div><div class="lg"><i style="background:#E8663D"></i><span id="mapLegendLow"></span></div>';
       L.DomEvent.disableClickPropagation(box);
       return box;
     }
@@ -342,11 +329,10 @@ function initMap() {
 
 function updateMapLegend() {
   const nature = state.mode === 'nature';
-  const t = document.getElementById('mapLegendTitle');
-  if (!t) return;
-  t.textContent = nature ? 'Calm score' : 'Silence score';
-  document.getElementById('mapLegendLow').textContent = nature ? 'Busy' : 'Known';
-  document.getElementById('mapLegendHigh').textContent = nature ? 'Calm' : 'Hidden';
+  const set = (id, t) => { const e = document.getElementById(id); if (e) e.textContent = t; };
+  set('mapLegendHigh', nature ? 'Very calm' : 'Very quiet');
+  set('mapLegendMid', nature ? 'Fairly calm' : 'Fairly quiet');
+  set('mapLegendLow', nature ? 'Near busy roads' : 'Busier, well known');
 }
 
 /** Highlight the selected place on both the map and the list. */
@@ -533,8 +519,8 @@ function popupFor(p) {
     el('div', { class: 'pop-title', text: p.name }),
     el('div', { class: 'pop-meta' }, el('span', { class: 'cat', text: p.category }), ` · ${formatDistance(p._d)} away`),
     p.mode === 'nature'
-      ? el('div', { text: `Calm score ${p.calm_score} · ${p.noise_level}` })
-      : el('div', { text: `Silence score ${p.silence_score} (${scoreLabel(p.silence_score, p.mode).toLowerCase()})` }),
+      ? el('div', { text: `${scoreLabel(p.calm_score, p.mode)} · ${p.noise_level}` })
+      : el('div', { class: 'pop-score', text: scoreLabel(p.silence_score, p.mode) }),
     hours ? el('div', { class: 'pop-hours', text: `${hours.status ? (hours.status.open ? 'Open now' : 'Closed now') + ' · ' + hours.status.detail + ' · ' : ''}${hours.text}` }) : null,
     el('div', { class: 'pop-actions' },
       el('a', { href: directionsUrl(p), target: '_blank', rel: 'noopener noreferrer', text: 'Walking directions ↗' }),
@@ -588,11 +574,11 @@ function renderPlaces() {
 
   if (!places.length) { showEmpty(); return; }
 
-  const cards = places.map(p => {
+  const cards = places.map((p, idx) => {
     const score = scoreOf(p);
     const color = scoreColor(score, p.mode);
     const nature = p.mode === 'nature';
-    const marker = L.marker([p.lat, p.lon], { icon: pinIcon(p, color), title: p.name, riseOnHover: true, keyboard: true })
+    const marker = L.marker([p.lat, p.lon], { icon: pinIcon(p, color, idx + 1), title: p.name, riseOnHover: true, keyboard: true })
       .bindPopup(() => popupFor(p), { minWidth: 220, maxWidth: 280, autoPanPaddingTopLeft: [10, 70], autoPanPaddingBottomRight: [10, 20] })
       .bindTooltip(p.name, { direction: 'top', offset: [0, -2], className: 'pin-tip' });
     marker.addTo(markersLayer);
@@ -619,8 +605,9 @@ function renderPlaces() {
     const card = el('div', { class: 'place-card', role: 'button', tabindex: '0', 'data-id': p.id,
         'aria-label': `${p.name}, ${nature ? 'calm' : 'silence'} score ${score}. Show on map.` },
       el('div', { class: 'place-card-top' },
+        el('span', { class: 'place-num', style: `background:${color}`, text: String(idx + 1) }),
         el('span', { class: 'place-name', text: p.name }),
-        el('span', { class: 'place-score', style: `color:${color}`, text: String(score) })),
+        el('span', { class: 'place-score', style: `color:${color}`, text: scoreLabel(score, p.mode) })),
       el('div', { class: 'place-meta' }, el('span', { class: 'cat', text: p.category }), ` · ${formatDistance(p._d)} away`),
       el('div', { class: 'place-why', text: why }),
       el('div', { class: 'place-status' },
@@ -868,11 +855,11 @@ function applyMode() {
   if (state.view !== 'saved') els.modeTitle.textContent = nature ? 'Calm nature spots' : 'Quietest spots';
   updateMapLegend();
   els.sortBestOpt.textContent = nature ? 'Calmest first' : 'Quietest first';
-  els.legendLow.textContent = nature ? 'Busy surroundings' : 'Well documented';
-  els.legendHigh.textContent = nature ? 'Very calm & natural' : 'Almost invisible';
+  els.legendLow.textContent = nature ? 'Near busy roads' : 'Busier / well known';
+  els.legendHigh.textContent = nature ? 'Very calm' : 'Very quiet';
   els.legendText.textContent = nature
-    ? 'Calm score combines how far a park, forest or lake is from busy roads and railways (an estimate from map data), how natural it is, and a small bonus if little is recorded about it. Higher means a more peaceful, greener spot.'
-    : 'The score shows how little is recorded about a place on OpenStreetMap — no website, hours or phone. Higher means quieter.';
+    ? 'Green pins are parks, forests and lakes far from busy roads. Amber are okay, orange are close to traffic. The number on a pin matches the number in the list.'
+    : 'Green pins are the places the fewest people have written about online, so they are likely quiet and less crowded. Orange are popular, well-known spots. The number on a pin matches the number in the list.';
 }
 
 function switchMode(mode) {
@@ -950,6 +937,7 @@ window.addEventListener('pagehide', stopFollow);
 
 /* -------------------------------------------------------------------- start */
 
+setTimeout(() => { const h = document.getElementById('mapHint'); if (h) h.classList.add('gone'); }, 12000);
 document.getElementById('fitBtn').addEventListener('click', () => fitAll());
 
 async function start() {
