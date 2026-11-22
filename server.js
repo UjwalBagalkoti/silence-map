@@ -13,8 +13,8 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.private.coffee/api/interpreter',
   'https://z.overpass-api.de/api/interpreter'
 ];
-const OVERPASS_HEDGE_MS = 1200;   // start the next mirror if the current one is slow
-const OVERPASS_ATTEMPT_MS = 14000;
+const OVERPASS_HEDGE_MS = 800;   // start the next mirror if the current one is slow
+const OVERPASS_ATTEMPT_MS = 9000;
 const ALL_GROUPS = ['amenity', 'shop', 'tourism', 'leisure'];
 const MAX_RESULTS = 60;
 const MAX_RADIUS = 300000;      // 300 km
@@ -93,6 +93,21 @@ function scoreFromTags(tagCount) {
   // (website, phone, hours, cuisine, wikidata, ...) means more has been
   // recorded, which lowers the silence score.
   return Math.max(0, Math.min(100, Math.round(100 - (tagCount - 2) * 11)));
+}
+
+/** Query limits per search tier: wide (> 10 km), light (quick first answer / fallback), full. */
+function tierOf(radius, light) { return radius > WIDE_RADIUS ? 'wide' : light ? 'light' : 'full'; }
+const TIER = {
+  wide:  { timeout: 45, attempt: WIDE_ATTEMPT_MS, limit: 1500, notable: true },
+  light: { timeout: 8,  attempt: 7000,            limit: 150,  notable: true },
+  full:  { timeout: 12, attempt: OVERPASS_ATTEMPT_MS, limit: 400, notable: false }
+};
+
+/** Overpass area filter. A bounding box is much cheaper for Overpass than a circle, so use it for normal searches. */
+function areaFilter(lat, lon, radius) {
+  if (radius > WIDE_RADIUS) return `(around:${radius},${lat},${lon})`;
+  const dLat = radius / 111320, dLon = radius / (111320 * Math.max(0.2, Math.cos(lat * Math.PI / 180)));
+  return `(${(lat - dLat).toFixed(5)},${(lon - dLon).toFixed(5)},${(lat + dLat).toFixed(5)},${(lon + dLon).toFixed(5)})`;
 }
 
 async function fetchWithTimeout(url, options = {}, ms = 20000) {
@@ -270,7 +285,7 @@ function overpass(query, attemptMs = OVERPASS_ATTEMPT_MS) {
           clearTimeout(timeout);
           if (done) return;
           lastErr = err;
-          console.warn(`overpass mirror failed: ${endpoint} - ${err && err.message}`);
+          console.warn(`overpass mirror failed: ${endpoint} - ${err && err.message}${err && err.cause ? ' (' + (err.cause.code || err.cause.message) + ')' : ''}`);
           running -= 1;
           // A failed mirror hands over to the next one straight away.
           if (!startNext() && running === 0) finish(reject, lastErr || new Error('Overpass unavailable'));
@@ -386,19 +401,22 @@ const NATURE_WIDE = {
 };
 
 async function natureMap(lat, lon, radius, groups, light = false) {
-  const wide = radius > WIDE_RADIUS || light;
+  const T = TIER[tierOf(radius, light)];
+  const wide = T.notable;
+  const area = areaFilter(lat, lon, radius);
   const clauses = wide
-    ? groups.flatMap(g => NATURE_WIDE[g].map(([k, v, extra]) => `nwr["name"]["${k}"~"^(${v})$"]${extra}(around:${radius},${lat},${lon});`))
-    : groups.flatMap(g => NATURE_CLAUSES[g].map(([k, v]) => `nwr["name"]["${k}"~"^(${v})$"](around:${radius},${lat},${lon});`));
-  const natureQuery = `[out:json][timeout:${wide ? 45 : 25}];(${clauses.join('')});out center tags ${wide ? 1500 : 500};`;
-  const noiseQuery = `[out:json][timeout:25];(
+    ? groups.flatMap(g => NATURE_WIDE[g].map(([k, v, extra]) => `nwr["name"]["${k}"~"^(${v})$"]${extra}${area};`))
+    : groups.flatMap(g => NATURE_CLAUSES[g].map(([k, v]) => `nwr["name"]["${k}"~"^(${v})$"]${area};`));
+  const natureQuery = `[out:json][timeout:${T.timeout}];(${clauses.join('')});out center tags ${T.limit};`;
+  const noiseQuery = `[out:json][timeout:10];(
     way["highway"~"^(motorway|trunk|primary|secondary)$"](around:${radius + NOISE_MAX_REACH},${lat},${lon});
     way["railway"="rail"](around:${radius + NOISE_MAX_REACH},${lat},${lon});
   );out body geom 8000;`;
 
   const [natureRes, noiseRes] = await Promise.allSettled([
-    overpass(natureQuery, wide ? WIDE_ATTEMPT_MS : undefined),
-    wide ? Promise.reject(new Error('road noise is not checked for light/wide searches')) : overpass(noiseQuery)
+    overpass(natureQuery, T.attempt),
+    wide ? Promise.reject(new Error('road noise is not checked for light/wide searches'))
+         : Promise.race([overpass(noiseQuery, 4500), new Promise((_, rej) => setTimeout(() => rej(new Error('road noise check took too long')), 4500))])
   ]);
   if (natureRes.status === 'rejected') throw natureRes.reason;
 
@@ -461,7 +479,9 @@ async function natureMap(lat, lon, radius, groups, light = false) {
  *   (types: green, wild, water, view).
  */
 async function quietMap(lat, lon, radius, groups, light = false) {
-  const wide = radius > WIDE_RADIUS || light;
+  const T = TIER[tierOf(radius, light)];
+  const wide = T.notable;
+  const area = areaFilter(lat, lon, radius);
   // Wide searches only look at notable quiet-type places, otherwise the query would never finish.
   const WIDE_QUIET = {
     amenity: '["amenity"~"^(place_of_worship|library|cafe)$"]["wikidata"]',
@@ -470,17 +490,17 @@ async function quietMap(lat, lon, radius, groups, light = false) {
     leisure: '["leisure"~"^(park|garden|nature_reserve)$"]'
   };
   const clauses = wide
-    ? groups.map(g => WIDE_QUIET[g]).filter(Boolean).map(f => `nwr["name"]${f}(around:${radius},${lat},${lon});`)
-    : groups.map(g => `nwr["name"]["${g}"](around:${radius},${lat},${lon});`);
+    ? groups.map(g => WIDE_QUIET[g]).filter(Boolean).map(f => `nwr["name"]${f}${area};`)
+    : groups.map(g => `nwr["name"]["${g}"]${area};`);
   if (!clauses.length) return [];
   const query = `
-    [out:json][timeout:${wide ? 45 : 25}];
+    [out:json][timeout:${T.timeout}];
     (
       ${clauses.join('\n          ')}
     );
-    out center tags ${wide ? 1500 : 500};
+    out center tags ${T.limit};
   `;
-  const data = await overpass(query, wide ? WIDE_ATTEMPT_MS : undefined);
+  const data = await overpass(query, T.attempt);
   const seen = new Set();
   const places = [];
   for (const el of data.elements || []) {
@@ -521,17 +541,18 @@ app.get('/api/silence-map', async (req, res) => {
   }
   const radius = Math.max(200, Math.min(parseInt(req.query.radius, 10) || 2000, MAX_RADIUS));
   const mode = req.query.mode === 'nature' ? 'nature' : 'quiet';
+  const lightOnly = req.query.light === '1';
 
   const allowed = mode === 'nature' ? NATURE_GROUPS : ALL_GROUPS;
   const requested = String(req.query.types || '').split(',').map(s => s.trim()).filter(Boolean);
   const groups = requested.length ? allowed.filter(g => requested.includes(g)) : allowed;
   if (!groups.length) return res.status(400).json({ error: 'No valid place types selected.' });
 
-  const cacheKey = `${mode}|${lat.toFixed(3)}|${lon.toFixed(3)}|${radius}|${groups.join(',')}`;
+  const cacheKey = `${mode}|${lat.toFixed(3)}|${lon.toFixed(3)}|${radius}|${groups.join(',')}${lightOnly ? '|light' : ''}`;
   const cached = placesCache.get(cacheKey);
   if (cached) {
     // Distances depend on the exact centre, so recompute them for the cached set.
-    const places = cached.places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
+    const places = cached.places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) })).filter(p => p.distance_m <= radius);
     res.set('Cache-Control', 'public, s-maxage=1800, stale-while-revalidate=86400');
     return res.json({ mode, count: places.length, radius, center: { lat, lon }, cached: true, ...cached.meta, places });
   }
@@ -540,17 +561,19 @@ app.get('/api/silence-map', async (req, res) => {
   try {
     if (mode === 'nature') {
       let r;
-      try { r = await natureMap(lat, lon, radius, groups); }
+      try { r = await natureMap(lat, lon, radius, groups, lightOnly); }
       catch (firstErr) {
         console.warn('nature search failed, retrying with a lighter query:', firstErr && firstErr.message);
+        if (lightOnly) throw firstErr;
         r = await natureMap(lat, lon, radius, groups, true);
       }
       places = r.places;
-      meta = { noise_available: r.noiseAvailable, noise_partial: r.noisePartial };
+      meta = { noise_available: r.noiseAvailable, noise_partial: r.noisePartial, ...(lightOnly ? { light: true } : {}) };
     } else {
-      try { places = await quietMap(lat, lon, radius, groups); }
+      try { places = await quietMap(lat, lon, radius, groups, lightOnly); if (lightOnly) meta = { light: true }; }
       catch (firstErr) {
         console.warn('quiet search failed, retrying with a lighter query:', firstErr && firstErr.message);
+        if (lightOnly) throw firstErr;
         places = await quietMap(lat, lon, radius, groups, true);
         meta = { light: true };
       }
@@ -559,7 +582,7 @@ app.get('/api/silence-map', async (req, res) => {
     // Serve the last good result for this spot (even if old) rather than nothing.
     const stale = placesCache.get(cacheKey, { allowStale: true });
     if (stale) {
-      const old = stale.places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
+      const old = stale.places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) })).filter(p => p.distance_m <= radius);
       res.set('Cache-Control', 'no-store');
       return res.json({ mode, count: old.length, radius, center: { lat, lon }, cached: true, stale: true, ...stale.meta, places: old });
     }
@@ -569,7 +592,7 @@ app.get('/api/silence-map', async (req, res) => {
 
   placesCache.set(cacheKey, { places, meta });
   if (!meta.light) res.set('Cache-Control', 'public, s-maxage=1800, stale-while-revalidate=86400');
-  const withDistance = places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) }));
+  const withDistance = places.map(p => ({ ...p, distance_m: haversine(lat, lon, p.lat, p.lon) })).filter(p => p.distance_m <= radius);
   res.json({ mode, count: withDistance.length, radius, center: { lat, lon }, cached: false, ...meta, places: withDistance });
 });
 
