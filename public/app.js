@@ -281,13 +281,36 @@ function directionsUrl(p) {
 
 /* -------------------------------------------------------------------- map */
 
+/* Pin icons: a teardrop in the score colour with a symbol for the kind of place. */
+const ICONS = [
+  [/cafe|coffee|tea/, '☕'], [/restaurant|food|fast_food|bar|pub|ice_cream|bakery/, '🍽'],
+  [/park|garden|playground|pitch|recreation|common/, '🌳'], [/forest|wood|nature|reserve|wild/, '🌲'],
+  [/water|lake|beach|river|pond|spring|bay/, '💧'], [/viewpoint|peak|view|hill/, '⛰'],
+  [/museum|gallery|artwork|attraction|monument|memorial|castle|ruins|temple|place_of_worship|church|mosque/, '🏛'],
+  [/library|school|university|college|books/, '📚'], [/shop|supermarket|convenience|clothes|market|mall|store/, '🛍'],
+  [/hotel|hostel|guest|camp/, '🛏'], [/hospital|clinic|pharmacy|doctor/, '⚕'], [/fitness|sports|swimming|yoga|gym/, '🏃']
+];
+function iconFor(p) {
+  const c = `${p.category || ''} ${p.group || ''}`.toLowerCase();
+  for (const [re, ch] of ICONS) if (re.test(c)) return ch;
+  return ({ green: '🌳', wild: '🌲', water: '💧', view: '⛰', shop: '🛍', tourism: '📍', leisure: '🌳', amenity: '📍' })[p.group] || '📍';
+}
+function pinIcon(p, color) {
+  const html = `<div class="pin"><svg viewBox="0 0 40 52" width="40" height="52" aria-hidden="true">` +
+    `<path d="M20 51C20 51 3 31 3 19a17 17 0 0 1 34 0c0 12-17 32-17 32z" fill="${color}" stroke="#fff" stroke-width="3"/></svg>` +
+    `<span class="pin-glyph">${iconFor(p)}</span></div>`;
+  return L.divIcon({ html, className: 'pin-wrap', iconSize: [40, 52], iconAnchor: [20, 50], popupAnchor: [0, -46], tooltipAnchor: [0, -40] });
+}
+
 function initMap() {
   map = L.map('map', { zoomControl: true });
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19
   }).addTo(map);
-  markersLayer = L.layerGroup().addTo(map);
+  markersLayer = (L.markerClusterGroup
+    ? L.markerClusterGroup({ maxClusterRadius: 38, showCoverageOnHover: false, spiderfyOnMaxZoom: true, disableClusteringAtZoom: 17 })
+    : L.layerGroup()).addTo(map);
 
   // On-map legend so the colours are explained where you see them.
   const Legend = L.Control.extend({
@@ -329,17 +352,16 @@ function updateMapLegend() {
 /** Highlight the selected place on both the map and the list. */
 function setSelected(id) {
   if (state.selectedId && state.markers.has(state.selectedId)) {
-    const m = state.markers.get(state.selectedId);
-    m.setStyle({ weight: 1, color: m.options.fillColor });
-    m.setRadius(m.options.baseRadius);
+    const el0 = state.markers.get(state.selectedId).getElement();
+    if (el0) el0.classList.remove('pin-selected');
   }
   document.querySelectorAll('.place-card.active').forEach(c => c.classList.remove('active'));
   state.selectedId = id;
   if (id && state.markers.has(id)) {
     const m = state.markers.get(id);
-    m.setStyle({ weight: 3, color: '#FFFFFF' });
-    m.setRadius(m.options.baseRadius + 4);
-    m.bringToFront();
+    const apply = () => { const e = m.getElement(); if (e) e.classList.add('pin-selected'); };
+    if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(m, apply); else apply();
+    m.setZIndexOffset(1000);
     const card = document.querySelector(`.place-card[data-id="${CSS.escape(id)}"]`);
     if (card) card.classList.add('active');
   }
@@ -476,9 +498,38 @@ function sortedPlaces() {
   return arr;
 }
 
+const photoMem = new Map();
+function loadPhotos(p, box) {
+  const show = list => {
+    if (!list.length) { box.remove(); return; }
+    box.classList.remove('loading');
+    const img = el('img', { alt: `Photo near ${p.name}`, loading: 'lazy', referrerpolicy: 'no-referrer' });
+    let i = 0;
+    const cap = el('a', { class: 'photo-credit', target: '_blank', rel: 'noopener noreferrer' });
+    const set = () => {
+      const ph = list[i];
+      img.src = ph.url;
+      cap.textContent = `${ph.source === 'Google' ? 'Photo: ' : 'Photo near here: '}${ph.credit}${ph.license ? ' · ' + ph.license : ''} · ${ph.source}`;
+      if (ph.link) cap.href = ph.link; else cap.removeAttribute('href');
+    };
+    img.addEventListener('error', () => { if (i < list.length - 1) { i++; set(); } else box.remove(); });
+    box.replaceChildren(img, cap);
+    if (list.length > 1) box.append(el('button', { type: 'button', class: 'photo-next', text: `Next photo (${list.length})`, onclick: () => { i = (i + 1) % list.length; set(); } }));
+    set();
+    const pm = map && map._popup; if (pm && pm._updateLayout) { pm._updateLayout(); pm._updatePosition(); pm._adjustPan(); }
+  };
+  if (photoMem.has(p.id)) { show(photoMem.get(p.id)); return; }
+  fetch(`/api/place-photos?lat=${p.lat}&lon=${p.lon}&name=${encodeURIComponent(p.name)}`)
+    .then(r => r.json()).then(j => { photoMem.set(p.id, j.photos || []); show(j.photos || []); })
+    .catch(err => { console.warn('photo ui failed:', err); box.remove(); });
+}
+
 function popupFor(p) {
   const hours = hoursInfo(p);
+  const photoBox = el('div', { class: 'photo-box loading', text: 'Loading photo…' });
+  loadPhotos(p, photoBox);
   return el('div', {},
+    photoBox,
     el('div', { class: 'pop-title', text: p.name }),
     el('div', { class: 'pop-meta' }, el('span', { class: 'cat', text: p.category }), ` · ${formatDistance(p._d)} away`),
     p.mode === 'nature'
@@ -541,18 +592,16 @@ function renderPlaces() {
     const score = scoreOf(p);
     const color = scoreColor(score, p.mode);
     const nature = p.mode === 'nature';
-    const baseRadius = 7 + score / 11;
-    const marker = L.circleMarker([p.lat, p.lon], {
-      radius: baseRadius, fillColor: color, fillOpacity: 0.85, color, weight: 1
-    }).bindPopup(() => popupFor(p));
-    marker.options.baseRadius = baseRadius;
+    const marker = L.marker([p.lat, p.lon], { icon: pinIcon(p, color), title: p.name, riseOnHover: true, keyboard: true })
+      .bindPopup(() => popupFor(p), { minWidth: 220, maxWidth: 280, autoPanPaddingTopLeft: [10, 70], autoPanPaddingBottomRight: [10, 20] })
+      .bindTooltip(p.name, { direction: 'top', offset: [0, -2], className: 'pin-tip' });
     marker.addTo(markersLayer);
     state.markers.set(p.id, marker);
 
     const open = () => {
       setSelected(p.id);
       flyTo(p.lat, p.lon, 17);
-      setTimeout(() => marker.openPopup(), 300);
+      setTimeout(() => { if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(marker, () => marker.openPopup()); else marker.openPopup(); }, 300);
       if (window.matchMedia('(max-width: 820px)').matches) $('map').scrollIntoView({ behavior: 'smooth', block: 'center' });
     };
     marker.on('click', () => {
@@ -597,11 +646,18 @@ function renderPlaces() {
   els.list.replaceChildren(...cards);
   refreshFavUi();
 
-  if (state.view === 'saved' && places.length) {
-    state.programmatic = true;
-    map.fitBounds(L.latLngBounds(places.map(p => [p.lat, p.lon])), { padding: [40, 40], maxZoom: 16 });
-    setTimeout(() => { state.programmatic = false; }, 1200);
-  }
+  fitAll(places);
+}
+
+/** Zoom so every result is on screen. Search radius alone can leave pins off-screen on small maps. */
+function fitAll(places = sortedPlaces()) {
+  if (!places.length) return;
+  map.invalidateSize();
+  state.programmatic = true;
+  const pts = places.map(p => [p.lat, p.lon]);
+  if (state.user) pts.push([state.user.lat, state.user.lon]);
+  map.fitBounds(L.latLngBounds(pts), { padding: [60, 60], maxZoom: 17, animate: false });
+  setTimeout(() => { state.programmatic = false; }, 600);
 }
 
 /* ------------------------------------------------------------------ loading */
@@ -615,7 +671,7 @@ function openPendingPlace() {
   if (!marker || !place) { toast('That shared place is not in the results any more, so the surrounding area is shown.', 6000); return; }
   setSelected(id);
   jumpTo(place.lat, place.lon, 17);
-  marker.openPopup();
+  if (markersLayer.zoomToShowLayer) markersLayer.zoomToShowLayer(marker, () => marker.openPopup()); else marker.openPopup();
   const card = document.querySelector(`.place-card[data-id="${CSS.escape(id)}"]`);
   if (card) card.scrollIntoView({ block: 'nearest' });
 }
@@ -681,6 +737,7 @@ async function loadSilenceMap(lat, lon, label, { keepView = false } = {}) {
       else if (data.noise_partial) toast('This area is very busy, so the noise estimate may be incomplete. Try a smaller radius.', 6000);
     }
     openPendingPlace();
+    if (state.places.length && !safeStorage('get', 'silence-map:pinhint')) { toast('Tap any pin to see the place, its photo and directions.', 6000); safeStorage('set', 'silence-map:pinhint', 1); }
   } catch (err) {
     if (seq !== state.loadSeq) return;
     if (/Trying again/.test(els.toast.textContent)) els.toast.hidden = true;
@@ -892,6 +949,8 @@ if ('serviceWorker' in navigator) {
 window.addEventListener('pagehide', stopFollow);
 
 /* -------------------------------------------------------------------- start */
+
+document.getElementById('fitBtn').addEventListener('click', () => fitAll());
 
 async function start() {
   initMap();

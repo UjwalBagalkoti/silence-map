@@ -93,3 +93,8 @@ silence-map/
 - Node.js + Express
 - [Leaflet](https://leafletjs.com/) for the map
 - [OpenStreetMap](https://www.openstreetmap.org/), [Nominatim](https://nominatim.org/), and [Overpass API](https://overpass-api.de/) for all data
+
+## v1.3
+- Big teardrop pins with a symbol per place type, clustering, name labels, auto-zoom to all results, "Show all" button.
+- Photos in each place popup: Google Places photos if `GOOGLE_PLACES_API_KEY` is set (needs a Google Cloud project with billing), otherwise freely licensed nearby photos from Wikimedia Commons.
+- Leaflet is bundled in `public/vendor` (no third-party CDN needed).

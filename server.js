@@ -97,6 +97,90 @@ async function fetchWithTimeout(url, options = {}, ms = 20000) {
 
 // ------------------------------------------------------------------- routes
 
+// ------------------------------------------------------------------ photos
+// Google Places photos when GOOGLE_PLACES_API_KEY is set (needs billing on the Google Cloud project),
+// otherwise freely licensed nearby photos from Wikimedia Commons.
+const photoCache = makeCache(24 * 60 * 60 * 1000, 500);
+
+async function googlePhotos(name, lat, lon, key) {
+  const r = await fetchWithTimeout('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': key,
+      'X-Goog-FieldMask': 'places.displayName,places.googleMapsUri,places.photos'
+    },
+    body: JSON.stringify({
+      textQuery: name,
+      maxResultCount: 1,
+      locationBias: { circle: { center: { latitude: lat, longitude: lon }, radius: 150 } }
+    })
+  }, 8000);
+  if (!r.ok) throw new Error(`Google Places ${r.status}`);
+  const place = ((await r.json()).places || [])[0];
+  if (!place || !place.photos || !place.photos.length) return [];
+  const out = [];
+  for (const ph of place.photos.slice(0, 3)) {
+    const m = await fetchWithTimeout(
+      `https://places.googleapis.com/v1/${ph.name}/media?maxWidthPx=600&skipHttpRedirect=true&key=${encodeURIComponent(key)}`, {}, 8000);
+    if (!m.ok) continue;
+    const j = await m.json();
+    if (!j.photoUri) continue;
+    const a = (ph.authorAttributions || [])[0] || {};
+    out.push({ url: j.photoUri, credit: a.displayName || 'Google Maps contributor', link: a.uri || place.googleMapsUri || null, source: 'Google' });
+  }
+  return out;
+}
+
+async function commonsPhotos(lat, lon) {
+  const url = 'https://commons.wikimedia.org/w/api.php?action=query&format=json&generator=geosearch&ggsnamespace=6' +
+    `&ggscoord=${lat}%7C${lon}&ggsradius=300&ggslimit=8&prop=imageinfo&iiprop=url%7Cextmetadata%7Cmime&iiurlwidth=600&origin=*`;
+  const r = await fetchWithTimeout(url, { headers: { 'User-Agent': USER_AGENT } }, 8000);
+  if (!r.ok) throw new Error(`Commons ${r.status}`);
+  const pages = Object.values(((await r.json()).query || {}).pages || {});
+  const strip = h => String(h || '').replace(/<[^>]*>/g, '').trim();
+  return pages
+    .map(pg => (pg.imageinfo || [])[0] && { pg, ii: pg.imageinfo[0] })
+    .filter(x => x && /^image\/(jpeg|png|webp)$/.test(x.ii.mime || '') && x.ii.thumburl)
+    .slice(0, 3)
+    .map(({ pg, ii }) => {
+      const md = ii.extmetadata || {};
+      return {
+        url: ii.thumburl,
+        credit: strip(md.Artist && md.Artist.value).slice(0, 60) || 'Wikimedia Commons',
+        license: strip(md.LicenseShortName && md.LicenseShortName.value) || null,
+        link: ii.descriptionshorturl || `https://commons.wikimedia.org/wiki/${encodeURIComponent(pg.title)}`,
+        source: 'Wikimedia Commons'
+      };
+    });
+}
+
+app.get('/api/place-photos', async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  const name = String(req.query.name || '').slice(0, 120);
+  if (Number.isNaN(lat) || Number.isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return res.status(400).json({ error: 'Valid "lat" and "lon" are required.' });
+  }
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  const cacheKey = `${name}|${lat.toFixed(4)}|${lon.toFixed(4)}|${key ? 'g' : 'c'}`;
+  const hit = photoCache.get(cacheKey);
+  if (hit) return res.json(hit);
+  let photos = [];
+  try {
+    if (key && name) {
+      try { photos = await googlePhotos(name, lat, lon, key); } catch (e) { console.error('google photos failed:', e.message); }
+    }
+    if (!photos.length) photos = await commonsPhotos(lat, lon);
+  } catch (e) {
+    console.error('photo lookup failed:', e.message);
+    return res.json({ photos: [] });   // not cached, so it can be retried
+  }
+  const body = { photos };
+  photoCache.set(cacheKey, body);
+  res.json(body);
+});
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
 
 /**
