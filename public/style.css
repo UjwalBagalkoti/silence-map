@@ -376,3 +376,5 @@ body.nature .intro button{background:var(--nature-bg);border-color:var(--nature-
 .pin-selected .pin-mid,.pin-selected .pin-low{opacity:1;transform:scale(1.35);}
 .quiet-only{display:flex;gap:8px;align-items:center;font-size:13px;margin:0 0 8px;cursor:pointer;color:var(--text-primary);}
 .saved-bar{flex-wrap:wrap;gap:8px;}
+
+.pop-actions a:first-child{background:#1FA95B;color:#fff !important;padding:7px 12px;border-radius:8px;font-weight:700;text-decoration:none;}

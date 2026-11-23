@@ -3,7 +3,7 @@
  * - Leaflet from unpkg: cached after first load.
  * - /api/*: never cached; gives a friendly message when offline.
  * - Map tiles and fonts: left to the browser. */
-const SHELL_CACHE = 'silence-map-shell-v10';
+const SHELL_CACHE = 'silence-map-shell-v11';
 const LIB_CACHE = 'silence-map-lib-v1';
 const SHELL = ['/', '/style.css', '/app.js', '/vendor/leaflet/leaflet.js', '/vendor/leaflet/leaflet.css', '/vendor/markercluster/leaflet.markercluster.js', '/vendor/markercluster/MarkerCluster.css', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 

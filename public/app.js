@@ -167,7 +167,9 @@ function hoursInfo(p) {
     const earliest = starts.length ? Math.min(...starts) : null;
     if (earliest != null && earliest <= 8 * 60) tip = `Tip: opens from ${hhmm(earliest)}. Early morning is usually the calmest time.`;
   }
-  return { text: p.opening_hours, status, tip };
+  const hr = new Date().getHours();
+  const calmNow = !!(status && status.open && (hr < 10 || hr >= 19));
+  return { text: p.opening_hours, status, tip, calmNow };
 }
 
 /* ----------------------------------------------------------- share and OSM */
@@ -262,6 +264,7 @@ function toast(message, ms = 4500) {
 }
 
 function directionsUrl(p) {
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return `https://maps.apple.com/?daddr=${p.lat},${p.lon}&dirflg=w`;
   return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}&travelmode=walking`;
 }
 
@@ -487,6 +490,7 @@ function distanceOf(p) {
 function sortedPlaces() {
   const source = state.view === 'saved' ? getFavs() : state.places;
   let arr = source.map(p => ({ ...p, _d: distanceOf(p) }));
+  if (state.openNow && state.view !== 'saved') arr = arr.filter(p => { const h = hoursInfo(p); return !(h && h.status && !h.status.open); });
   if (state.quietOnly && state.view !== 'saved') { const q = arr.filter(p => scoreOf(p) >= 70); if (q.length) arr = q; }
   if (state.sort === 'near' || state.view === 'saved') arr.sort((a, b) => a._d - b._d);
   else arr.sort((a, b) => scoreOf(b) - scoreOf(a) || a.tag_count - b.tag_count);
@@ -622,6 +626,7 @@ function renderPlaces() {
       el('div', { class: 'place-status' },
         nature ? el('span', { class: `noise ${noiseClass}`, text: p.noise_level }) : null,
         el('span', { class: 'badge', text: scoreLabel(score, p.mode) }),
+        hours && hours.calmNow ? el('span', { class: 'open-badge open', text: 'Usually calm at this hour' }) : null,
         hours && hours.status ? el('span', { class: `open-badge ${hours.status.open ? 'open' : 'closed'}`,
           text: `${hours.status.open ? 'Open now' : 'Closed now'} · ${hours.status.detail}` }) : null),
       hours ? el('div', { class: 'place-hours', text: `Hours: ${hours.text}` }) : null,
@@ -997,6 +1002,16 @@ window.addEventListener('pagehide', stopFollow);
 /* -------------------------------------------------------------------- start */
 
 setTimeout(() => { const h = document.getElementById('mapHint'); if (h) h.classList.add('gone'); }, 12000);
+document.getElementById('openNow').addEventListener('change', e => { state.openNow = e.target.checked; renderPlaces(); openQuietest(); });
+document.getElementById('shareSearchBtn').addEventListener('click', async () => {
+  if (!state.center) return;
+  const u = new URL(location.href.split('?')[0]);
+  u.searchParams.set('lat', state.center.lat.toFixed(4)); u.searchParams.set('lon', state.center.lon.toFixed(4));
+  u.searchParams.set('r', String(state.radius)); if (state.mode === 'nature') u.searchParams.set('mode', 'nature');
+  if (navigator.share) { try { await navigator.share({ title: 'Silence Map', text: 'Quiet places in this area', url: u.href }); return; } catch (e) { if (e && e.name === 'AbortError') return; } }
+  try { await navigator.clipboard.writeText(u.href); toast('Link copied. Paste it anywhere to share this search.'); }
+  catch (_) { toast(`Copy this link: ${u.href}`, 12000); }
+});
 document.getElementById('quietOnly').addEventListener('change', e => { state.quietOnly = e.target.checked; safeStorage('set', 'silence-map:quietonly', state.quietOnly); renderPlaces(); openQuietest(); });
 document.getElementById('fitBtn').addEventListener('click', () => fitAll());
 
@@ -1034,11 +1049,18 @@ async function start() {
     return locateMe();
   }
 
+  let canAsk = false;
+  try { if (navigator.permissions && navigator.geolocation) canAsk = (await navigator.permissions.query({ name: 'geolocation' })).state === 'prompt'; } catch (_) {}
   const last = safeStorage('get', 'silence-map:last');
   const begin = last && Number.isFinite(last.lat) && Number.isFinite(last.lon) ? last : DEFAULT_CENTER;
   map.setView([begin.lat, begin.lon], zoomForRadius(state.radius));
   await loadSilenceMap(begin.lat, begin.lon, begin.label || 'Last search', { keepView: true });
   if (begin === DEFAULT_CENTER) toast('Showing Bengaluru. Tap “My location” to see quiet spots near you.', 7000);
+  // First visit: offer to use your location once. Never nag again if you ignore or refuse.
+  if (canAsk && begin === DEFAULT_CENTER && !safeStorage('get', 'silence-map:asked-location')) {
+    safeStorage('set', 'silence-map:asked-location', true);
+    setTimeout(() => locateMe(), 1500);
+  }
 }
 
 start();
