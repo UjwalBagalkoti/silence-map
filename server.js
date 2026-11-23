@@ -200,7 +200,7 @@ app.get('/api/place-photos', async (req, res) => {
   res.json(body);
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', geoapify: !!process.env.GEOAPIFY_API_KEY, googlePhotos: !!process.env.GOOGLE_PLACES_API_KEY }));
 
 /**
  * GET /api/geocode?q=<place name>
@@ -216,6 +216,16 @@ app.get('/api/geocode', async (req, res) => {
   if (cached) return res.json(cached);
 
   try {
+    if (process.env.GEOAPIFY_API_KEY) {
+      try {
+        const g = await fetchWithTimeout(`https://api.geoapify.com/v1/geocode/search?text=${encodeURIComponent(q)}&format=json&limit=5&apiKey=${encodeURIComponent(process.env.GEOAPIFY_API_KEY)}`, {}, 6000);
+        if (!g.ok) throw new Error(`Geoapify geocoding responded with ${g.status}`);
+        const gj = await g.json();
+        const out = (gj.results || []).filter(d => typeof d.lat === 'number' && typeof d.lon === 'number')
+          .map(d => ({ display_name: d.formatted || d.name || q, lat: d.lat, lon: d.lon }));
+        if (out.length) { geocodeCache.set(key, out); return res.json(out); }
+      } catch (e) { console.warn('geoapify geocoding failed, falling back to Nominatim:', e.message); }
+    }
     const url = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(q)}`;
     const r = await fetchWithTimeout(url, { headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en' } }, 10000);
     if (!r.ok) throw new Error(`Nominatim responded with ${r.status}`);
@@ -400,6 +410,74 @@ const NATURE_WIDE = {
   view: [['tourism', 'viewpoint', ''], ['natural', 'peak', '[wikidata]']]
 };
 
+
+// ------------------------------------------------------------------ data providers
+// Primary: Geoapify Places (set GEOAPIFY_API_KEY; free tier ~3000 credits/day). It serves OpenStreetMap data
+// from a reliable commercial API. Fallback: the free public Overpass servers, which are often overloaded.
+const GEO_CATS = {
+  amenity: 'catering,education.library,religion',
+  shop: 'commercial',
+  tourism: 'tourism,entertainment.museum',
+  leisure: 'leisure',
+  green: 'leisure.park',
+  wild: 'natural.forest,natural.protected_area,leisure.park.nature_reserve,national_park',
+  water: 'natural.water,beach',
+  view: 'tourism.attraction.viewpoint,natural.mountain'
+};
+
+// Used only when a result carries no raw OSM tags.
+function tagsFromCategories(cats) {
+  const c = (cats || []).join(' ');
+  if (/leisure\.park\.nature_reserve|protected_area/.test(c)) return { leisure: 'nature_reserve' };
+  if (/leisure\.park/.test(c)) return { leisure: 'park' };
+  if (/viewpoint/.test(c)) return { tourism: 'viewpoint' };
+  if (/natural\.(water|spring)|beach/.test(c)) return { natural: 'water' };
+  if (/natural\.forest/.test(c)) return { natural: 'wood' };
+  if (/natural\.mountain/.test(c)) return { natural: 'peak' };
+  if (/catering\.cafe/.test(c)) return { amenity: 'cafe' };
+  if (/catering/.test(c)) return { amenity: 'restaurant' };
+  if (/library/.test(c)) return { amenity: 'library' };
+  if (/religion/.test(c)) return { amenity: 'place_of_worship' };
+  if (/museum/.test(c)) return { tourism: 'museum' };
+  if (/tourism/.test(c)) return { tourism: 'attraction' };
+  if (/commercial/.test(c)) return { shop: 'yes' };
+  return { amenity: 'yes' };
+}
+
+async function geoapifyElements(lat, lon, radius, groups, limit) {
+  const key = process.env.GEOAPIFY_API_KEY;
+  const categories = [...new Set(groups.flatMap(g => (GEO_CATS[g] || '').split(',')).filter(Boolean))].join(',');
+  const url = `https://api.geoapify.com/v2/places?categories=${encodeURIComponent(categories)}` +
+    `&filter=circle:${lon},${lat},${radius}&bias=proximity:${lon},${lat}&limit=${limit}&apiKey=${encodeURIComponent(key)}`;
+  const r = await fetchWithTimeout(url, {}, 6000);
+  if (!r.ok) throw new Error(`Geoapify responded with ${r.status}`);
+  const j = await r.json();
+  const T = { n: 'node', w: 'way', r: 'relation' };
+  return (j.features || []).map(f => {
+    const p = f.properties || {};
+    const raw = (p.datasource && p.datasource.raw) || {};
+    const name = p.name || raw.name;
+    if (!name || typeof p.lat !== 'number' || typeof p.lon !== 'number') return null;
+    const tags = { ...(Object.keys(raw).some(k => /^(amenity|shop|tourism|leisure|natural|boundary|landuse)$/.test(k)) ? raw : tagsFromCategories(p.categories)), name };
+    const type = T[raw.osm_type] || 'node';
+    return { type, id: Number(raw.osm_id) || Math.abs(hashCode(p.place_id || name)), lat: p.lat, lon: p.lon, tags };
+  }).filter(Boolean);
+}
+
+function hashCode(str) { let h = 0; for (const ch of String(str)) h = (h * 31 + ch.charCodeAt(0)) | 0; return h; }
+
+/** Get elements from Geoapify when configured, otherwise (or on failure) from Overpass. */
+async function providerData({ lat, lon, radius, groups, limit, query, attempt }) {
+  if (process.env.GEOAPIFY_API_KEY) {
+    try {
+      const elements = await geoapifyElements(lat, lon, radius, groups, Math.min(limit, 100));
+      if (elements.length) return { elements, source: 'geoapify' };
+    } catch (e) { console.warn('geoapify failed, falling back to overpass:', e.message); }
+  }
+  const data = await overpass(query, attempt);
+  return { ...data, source: 'overpass' };
+}
+
 async function natureMap(lat, lon, radius, groups, light = false) {
   const T = TIER[tierOf(radius, light)];
   const wide = T.notable;
@@ -414,7 +492,7 @@ async function natureMap(lat, lon, radius, groups, light = false) {
   );out body geom 8000;`;
 
   const [natureRes, noiseRes] = await Promise.allSettled([
-    overpass(natureQuery, T.attempt),
+    providerData({ lat, lon, radius, groups, limit: T.limit, query: natureQuery, attempt: T.attempt }),
     wide ? Promise.reject(new Error('road noise is not checked for light/wide searches'))
          : Promise.race([overpass(noiseQuery, 4500), new Promise((_, rej) => setTimeout(() => rej(new Error('road noise check took too long')), 4500))])
   ]);
@@ -500,7 +578,7 @@ async function quietMap(lat, lon, radius, groups, light = false) {
     );
     out center tags ${T.limit};
   `;
-  const data = await overpass(query, T.attempt);
+  const data = await providerData({ lat, lon, radius, groups, limit: T.limit, query, attempt: T.attempt });
   const seen = new Set();
   const places = [];
   for (const el of data.elements || []) {

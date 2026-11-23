@@ -101,3 +101,6 @@ silence-map/
 - Big teardrop pins with a symbol per place type, clustering, name labels, auto-zoom to all results, "Show all" button.
 - Photos in each place popup: Google Places photos if `GOOGLE_PLACES_API_KEY` is set (needs a Google Cloud project with billing), otherwise freely licensed nearby photos from Wikimedia Commons.
 - Leaflet is bundled in `public/vendor` (no third-party CDN needed).
+
+## v2.0 – reliable data source
+Set `GEOAPIFY_API_KEY` (free key at geoapify.com, ~3000 requests/day) and searches use Geoapify (OpenStreetMap data) for places and place-name search. If the key is missing or Geoapify fails, the app falls back to the free public Overpass/Nominatim servers, which are often overloaded. `GET /api/health` shows whether the keys are configured.
